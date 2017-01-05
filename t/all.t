@@ -74,7 +74,7 @@ subtest empty => sub {
     is($gelf, undef);
 };
 
-$logger->disconnect;
+$logger->close;
 
 $listener->close;
 

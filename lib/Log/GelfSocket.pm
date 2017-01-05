@@ -340,14 +340,14 @@ sub flush
                 next;
             } elsif ($error) {
                 push @{$self->_buffer} => $message;
-                $self->disconnect;
+                $self->close;
                 return carp_or_croak("only sent $sent bytes: $error");
             } else {
                 die "only sent $sent bytes but got no error";
             }
         } elsif ($error) {
             push @{$self->_buffer} => $message;
-            $self->disconnect;
+            $self->close;
             return carp_or_croak("send error: $error");
         }
     }
@@ -355,13 +355,13 @@ sub flush
     return true;
 }
 
-=method disconnect
+=method close
 
 Closes the current handle.
 
 =cut
 
-sub disconnect
+sub close
 {
     my $self = shift;
     if ($self->_handle) {
