@@ -27,6 +27,17 @@ sub carp_or_croak
     return false;
 }
 
+=HEAD1 DESCRIPTION
+
+Send log messages to a local unix domain socket.
+
+=HEAD1 SYNOPSIS
+
+    $logger = Log::GelfSocket->new;
+    $logger->log(info => "This is a test message.");
+
+=cut
+
 =attr socket
 
 The unix domain datagram socket to connect to.
