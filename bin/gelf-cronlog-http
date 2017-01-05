@@ -1,0 +1,339 @@
+#!/usr/bin/perl -w
+
+# PODNAME: gelf-cronlog-http
+
+use strictures 2;
+
+# ABSTRACT: gelf socket log helper for fetching HTTP pages
+
+use LWP::UserAgent;
+use Log::GelfSocket;
+use Getopt::Long;
+use Time::HiRes qw(gettimeofday tv_interval);
+use Time::Duration;
+use Data::Dumper;
+use HTTP::Headers::Fancy qw(encode_key);
+use Pod::Usage;
+
+sub _dump
+{
+    Data::Dumper->new(\@_)->Terse(1)->Purity(1)->Indent(1)->Sortkeys(1)->Dump()
+}
+
+# VERSION
+
+################################################################################
+
+# Close input file descriptor, this script does not require any input
+close STDIN;
+
+# Pretty print of time duration with milliseconds
+$Time::Duration::MILLISECOND = 1;
+
+################################################################################
+
+=head1 SYNOPSIS
+
+gelf-cronlog-http --help
+
+gelf-cronlog-http [options] -- [url]
+
+=head1 OPTIONS
+
+=over 4
+
+=cut
+
+my @GetOpts;
+
+########################################
+
+=item B<--help>
+
+Z<>
+
+=cut
+
+my $help = 0;
+push @GetOpts => (
+    'help' => \$help
+);
+
+########################################
+
+=item B<--socket> <unix domain socket>
+
+The GELF socket we should log to.
+
+Defaults to I</var/run/gelf.sock>.
+
+=cut
+
+my $socket = '/var/run/gelf.sock';
+push @GetOpts => (
+    'socket=s'=> \$socket
+);
+
+########################################
+
+=item B<--extra> <key=value>
+
+Put extra field into GELF message
+
+May be used more than once
+
+=cut
+
+my @extras;
+push @GetOpts => (
+    'extra=s' => \@extras
+);
+
+########################################
+
+=item B<--header> <gelf_field=header_field>
+
+Extract HTTP header field into GELF message
+
+=cut
+
+my @headers;
+push @GetOpts => (
+    'header=s' => \@headers
+);
+
+########################################
+
+=item B<--timeout> <seconds>
+
+Command execution timeout
+
+Defaults to 30 seconds
+
+=cut
+
+my $timeout = 30;
+push @GetOpts => (
+    'timeout=i' => \$timeout
+);
+
+########################################
+
+=item B<--name> <name>
+
+Name for use in log message
+
+Defaults to command basename
+
+=cut
+
+my $name;
+push @GetOpts => (
+    'name=s' => \$name
+);
+
+########################################
+
+=item B<--fork>
+
+Fork before subprocess execution
+
+The parent process exits immediately
+
+Default is not forking, so the main process waits until everything is done
+
+This option is mutually exclusive with B<--debug>
+
+=cut
+
+my $fork = 0;
+push @GetOpts => (
+    'fork' => \$fork
+);
+
+########################################
+
+=item B<--debug>
+
+Do not log at all, but put some debug output to stdout
+
+This option is mutually exclusive with B<--fork>
+
+=cut
+
+my $debug = 0;
+push @GetOpts => (
+    'debug' => \$debug
+);
+
+=back
+
+=cut
+
+################################################################################
+
+# Facility name, not changable
+my $facility = 'cronlog-http';
+
+# Get last eval() error and strip off " at ... line ..." from end
+sub evalerr {
+    my $err = shift || $@ || return;
+    $err =~ s{ \s+ at \s+ (?<file> \S+ ) \s+ line \s+ (?<line> \S+? ) \.? \s* $}{}xgsi;
+    return $err;
+}
+
+GetOptions(@GetOpts) or pod2usage(2);
+
+if ($help) {
+    pod2usage(1);
+    exit 1;
+}
+
+# Any more arguments (separated by two dashes --) is the actual command (with arguments) to be executed, which is required
+unless (@ARGV) {
+    pod2usage(2);
+    exit 2;
+}
+
+# Split url and arguments
+my ($url, @arguments) = @ARGV;
+
+$url = ''.URI->new($url)->canonical;
+
+################################################################################
+
+# global gelf extras
+my %gextras = map { split(m{=}, $_, 2) } @extras;
+
+################################################################################
+
+# Connect to GELF socket
+my $logger = Log::GelfSocket->new(socket => $socket);
+
+################################################################################
+
+# At this point minimal information for error logging is available
+sub error {
+    my ($msg, %lextras) = @_;
+    my %log = (
+        %gextras,
+        %lextras,
+        facility    => $facility,
+        timestamp   => $^T,
+        url         => $url,
+    );
+    if ($debug) {
+        print "$msg\n"._dump(\%log);
+    } else {
+        $logger->log('alert', $msg, %log);
+    }
+    exit 0;
+}
+
+################################################################################
+
+# Fork if requested
+if ($fork) {
+    if ($debug) {
+        error("--fork and --debug are mutually exclusive");
+    }
+    my $pid = fork;
+    if ($pid) {
+        # Successful fork, parent process
+        exit 0;
+    }
+    unless (defined $pid) {
+        # Fork NOT successful
+        error("Error before executing $name: cannot fork: $!");
+    }
+    # Fork successful, child process, go ahead...
+    # Suppress any output, use logging instead
+    close STDOUT;
+    close STDERR;
+}
+
+################################################################################
+
+my $UA = LWP::UserAgent->new;
+$UA->timeout($timeout);
+$UA->env_proxy;
+
+# Start timer
+my @t0 = gettimeofday;
+
+my $response;
+
+eval {
+    $response = $UA->get($url);
+};
+
+# Stop timer
+my $td = tv_interval(\@t0);
+
+################################################################################
+
+if ($@) {
+    # eval() error, maybe timeout
+    my $err = evalerr();
+    error("Error while fetching $url: $err");
+} elsif (!$response) {
+    my $err = evalerr($!) || 'unknown error (no response)';
+    error("Error while fetching $url: $err");
+}
+
+################################################################################
+
+my $level;
+my $body = $response->decoded_content;
+my $msg = $response->status_line;
+my $headers = $response->headers;
+
+if (($response->header('Client-Warning') || '') eq 'Internal response') {
+    $level = 'alert';
+    $msg = $response->message;
+    $body = evalerr($body);
+} elsif ($response->is_success) {
+    $level = 'info';
+} elsif ($response->is_client_error) {
+    $level = 'error';
+} elsif ($response->is_server_error) {
+    $level = 'critical';
+} else {
+    $level = 'alert';
+}
+
+$msg .= ' after '.duration($td);
+
+################################################################################
+
+my %log = (
+    %gextras, ## global gelf extras
+    facility        => $facility,
+    timestamp       => $^T,
+    url             => $url,
+    full_message    => $body,
+    duration        => $td,
+    timeout         => $timeout,
+);
+
+foreach my $field (@headers) {
+    if ($field =~ m{^([^=]+)=(.+)$}) {
+        my ($gelf_field, $header_field) = ($1, $2);
+        $header_field = encode_key($header_field);
+        $log{$gelf_field} = $headers->header($header_field);
+    } else {
+        my $header_field = encode_key($field);
+        my $gelf_field = lc($header_field =~ s{-}{_}gr);
+        $log{$gelf_field} = $headers->header($header_field);
+    }
+}
+
+if ($debug) {
+    print "$level --- $msg\n"._dump(\%log);
+} else {
+    $logger->log($level, $msg, %log);
+}
+
+################################################################################
+
+exit 0;

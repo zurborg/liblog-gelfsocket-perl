@@ -1,0 +1,379 @@
+#!/usr/bin/perl -w
+
+# PODNAME: gelf-apache-httpd-errorlogger
+
+use strictures;
+use autodie;
+
+# ABSTRACT: Apache HTTPd log handler via GELF socket
+
+use DateTime::Format::ISO8601;
+use POSIX qw(strftime getpid getppid);
+use Getopt::Long;
+use FindBin qw($RealBin $RealScript);
+use MIME::Base64 qw(encode_base64url decode_base64url);
+use Pod::Usage;
+
+use lib "$RealBin/../lib";
+use Log::GelfSocket;
+
+use constant FMT_VERSION => 1;
+use constant PPID => getppid;
+
+$| = 1;
+
+################################################################################
+
+# VERSION
+
+our $RealPath = $RealBin . '/' . $RealScript;
+
+our $DEFAULT_LEVEL = 4;
+
+our %MAP = (
+    M   => 'message',
+    t   => 'timestamp',
+    l   => 'level',
+    a   => 'http_client',
+    E   => 'http_apros',
+    F   => 'filename',
+    k   => 'http_index',
+    L   => 'http_id',
+    m   => 'http_module',
+    v   => 'http_server',
+    V   => 'http_vhost',
+    UA  => 'http_useragent',
+    ref => 'http_referer',
+);
+
+our %PHPLEVELS = (
+                'parse error'   => 'fatal',
+                'fatal error'   => 'alert',
+      'catchable fatal error'   => 'crit',
+    'recoverable fatal error'   => 'crit',
+    'warning'                   => 'warn',
+    'deprecated'                => 'note',
+    'strict standards'          => 'info',
+);
+
+################################################################################
+
+=head1 SYNOPSIS
+
+gelf-apache-httpd-errorlogger --help
+
+gelf-apache-httpd-errorlogger [options] [fields]
+
+=head1 OPTIONS
+
+=over 4
+
+=cut
+
+my @GetOpts;
+
+########################################
+
+=item B<--help>
+
+Z<>
+
+=cut
+
+my $help = 0;
+push @GetOpts => (
+    'help' => \$help
+);
+
+########################################
+
+=item B<--version>
+
+Z<>
+
+=cut
+
+my $print_version;
+push @GetOpts => (
+    'version:s' => \$print_version
+);
+
+########################################
+
+=item B<--socket> <unix domain socket>
+
+The GELF socket we should log to.
+
+Defaults to I</var/run/gelf.sock>.
+
+=cut
+
+my $socket = '/var/run/gelf.sock';
+push @GetOpts => (
+    'socket=s'=> \$socket
+);
+
+########################################
+
+=item B<--setup>
+
+When present, just print a configution example and exit.
+
+=cut
+
+my $setup = 0;
+push @GetOpts => (
+    'setup' => \$setup,
+);
+
+########################################
+
+=item B<--extra>
+
+Put extra field into GELF message
+
+May be used more than once
+
+Only allowed together with --setup
+
+=cut
+
+my @extras;
+push @GetOpts => (
+    'extra=s' => \@extras,
+);
+
+########################################
+
+=back
+
+=cut
+
+GetOptions(@GetOpts) or pod2usage(2);
+
+if ($help) {
+    pod2usage(1);
+    exit 1;
+} elsif (defined $print_version and not length $print_version) {
+    my %V = (
+        $RealScript  => $main::VERSION,
+        'log format' => FMT_VERSION,
+    );
+
+    print join '' => map { "$_: v".($V{$_}//0)."\n" } sort keys %V;
+
+    exit 0;
+}
+
+if ($print_version and FMT_VERSION) {
+    if ($print_version ne FMT_VERSION) {
+        die "format version mismatch: only vFMT_VERSION covered\n";
+    }
+}
+
+################################################################################
+
+my @ARGV_ORIG = @ARGV;
+
+if ($setup) {
+    my @opts;
+    unless (@ARGV) {
+        @ARGV = qw(t{cu} a F k l L m v V M);
+    }
+    foreach my $opt (@ARGV) {
+        if ($opt =~ m{^[a-z]$}i) {
+            push @opts => $opt.'%-'.$opt;
+        } elsif ($opt =~ m{^([^=]+)=(.+)$}) {
+            push @opts => '%%'.$1.'%%%-'.$2;
+        } elsif ($opt =~ m{^([a-z])(.+)$}) {
+            push @opts => $1.'%-'.$2.$1;
+        } else {
+            warn "bad format: $opt";
+        }
+    }
+    my $fmtstr = join("\\r", @opts);
+    my $argv = join(' ', @ARGV);
+    print qq{# Custom log variables: $argv\n};
+    print qq{ErrorLogFormat "$fmtstr"\n};
+    my $cmd = $RealPath;
+    $cmd .= " --version=" . FMT_VERSION if FMT_VERSION;
+    $cmd .= " --socket " . $socket if defined $socket;
+    $cmd .= " -- " . join(" ", map { encode_base64url($_) } @extras) if @extras;
+    print qq{ErrorLog       "|$cmd"\n};
+    exit;
+}
+
+our %EXTRAS = map { split(m{=}, $_, 2) } map { decode_base64url($_) } @ARGV;
+
+my $logger = Log::GelfSocket->new(socket => $socket);
+
+sub pushlog {
+    return unless $logger;
+    unshift @_ => 'message' if @_ % 2;
+    my %extra   = @_;
+    my $level   = delete ($extra{level}) || $DEFAULT_LEVEL;
+    my $message = delete $extra{message};
+    $logger->log($level, $message, %extra);
+}
+
+sub mylog {
+    my ($level, $msg, %rest) = @_;
+    @_ = ($msg, %rest, level => $level);
+    goto &pushlog;
+}
+
+{ ##############################################################################
+
+    mylog(info => "$RealScript online" , bin => $RealPath, pid => getpid(), apache_pid => PPID());
+
+} END { ########################################################################
+
+    mylog(info => "$RealScript offline", bin => $RealPath, pid => getpid(), apache_pid => PPID());
+
+} ##############################################################################
+
+sub unescape
+{
+    shift
+    =~ s{^\s+}{}gr
+    =~ s{\s+$}{}gr
+    =~ s{\\"}{"}gr
+    =~ s{\\r}{\r}gr
+    =~ s{\\n}{\n}gr
+    =~ s{\\t}{\t}gr
+    =~ s{\\ }{ }gr
+    =~ s{\\x(\d\d)}{chr(hex($1))}gre
+    =~ s{\\\\}{\\}gr
+    =~ s{^-$}{}gr
+}
+
+sub parse_dt {
+    my $str = shift;  #2016-04-26 19:14:43.528111
+    $str =~ s{ }{T};  #2016-04-26T19:14:43.528111
+    my $tz = strftime('%z', localtime time);   # +0200
+    $tz =~ s{^([+-])(\d\d):?(\d\d)$}{$1$2:$3}; # +02:00
+    $str .= $tz;      #2016-04-26T19:14:43.528111+02:00
+    DateTime::Format::ISO8601->parse_datetime($str);
+}
+
+sub errlog {
+    my %I = @_;
+    my %O = map {( $MAP{$_} => delete $I{$_} )} grep { exists $MAP{$_} } keys %I;
+    $O{_rest} = \%I if keys %I;
+
+    return unless $O{message};
+
+    $O{timestamp} = $O{timestamp} ? parse_dt($O{timestamp}) : DateTime->from_epoch(epoch => Time::HiRes::time());
+
+    $O{facility}    = 'apache';
+    $O{apache_pid}  = PPID;
+
+    $O{message} =~ m{^\s*([^\n]+)\n*(.*)\s*$}s;
+    $O{message} = $1;
+    $O{full_message} = $2 || undef;
+
+    if ($O{filename} =~ m{^
+        (?<filename> .+ )
+        \(
+        (?<line> \d+ )
+        \)
+    $}xs) {
+        %O = (%O, %+);
+    }
+
+    if ($O{message} =~ m{^
+        (?<facility> FastCGI )
+    \s*
+        :
+    \s+
+        server
+    \s+
+        "
+    \s*
+        (?<fastcgi_server> [^"]+ )
+    \s*
+        "
+    \s+
+        (?<fastcgi_stream> \w+ )
+    \s*
+        :
+    \s+
+        (?<message> .+ )
+    $}sx) {
+        %O = (%O, %+);
+    }
+
+    if ($O{message} =~ m{^
+        (?<facility> PHP )
+    \s+
+        message
+    \s*
+        :
+    \s+
+        (?<message> .+ )
+    $}sx) {
+        %O = (%O, %+, level => 'info');
+    }
+
+    if ($O{message} =~ m{^
+        (?<facility> PHP )
+    \s+
+        (?<level> [^:]+? )
+    \s*
+        :
+    \s+
+        (?<message> .+? )
+    \s+
+        in
+    \s+
+        (?<filename> \S+? )
+    \s+
+        on
+    \s+
+        line
+    \s+
+        (?<line> \d+ )
+    $}sx) {
+        my $level = $+{level};
+        $level = $PHPLEVELS{lc($level)} || $level;
+        %O = (%O, %+, level => $level);
+    }
+
+    if ($O{message} =~ m{^
+        AH
+        0*
+        (?<apache_errno> [1-9][0-9]* )
+        :
+    \s+
+        (?<message> .+ )
+    $}sx) {
+        %O = (%O, %+);
+    }
+
+    pushlog(%EXTRAS, %O);
+}
+
+while (my $line = <STDIN>) {
+    chomp $line;
+
+    my %data;
+
+    unless ($line =~ m{\r}) {
+        $data{M} = unescape($line);
+        $line = '';
+    }
+
+    foreach my $part (split m{\r+} => $line) {
+        if ($part =~ m{^([a-z])(.*)$}si) {
+            $data{$1} = unescape($2);
+        } elsif ($part =~ m{^%([^%]+)%(.*)$}) {
+            $data{$1} = unescape($2);
+        } elsif ($part) {
+            warn("bad part: <$part>\n");
+        }
+    }
+
+    next unless keys %data;
+
+    errlog(%data);
+}

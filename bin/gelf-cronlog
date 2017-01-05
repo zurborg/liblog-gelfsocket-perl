@@ -1,0 +1,394 @@
+#!/usr/bin/perl -w
+
+# PODNAME: gelf-cronlog
+
+use strictures 2;
+
+# ABSTRACT: gelf socket log helper for cronjobs
+
+use POSIX qw(getcwd getuid);
+use IPC::Run qw(run timeout);
+use Log::GelfSocket;
+use Getopt::Long;
+use Time::HiRes qw(gettimeofday tv_interval);
+use Time::Duration;
+use Data::Dumper;
+use Env::Path qw(PATH);
+use File::Basename qw(basename);
+use Pod::Usage;
+
+# VERSION
+
+################################################################################
+
+# Close input file descriptor, this script does not require any input
+close STDIN;
+
+# Pretty print of time duration with milliseconds
+$Time::Duration::MILLISECOND = 1;
+
+################################################################################
+
+=head1 SYNOPSIS
+
+gelf-cronlog --help
+
+gelf-cronlog [options] -- [command] [optional arguments...]
+
+=head1 OPTIONS
+
+=over 4
+
+=cut
+
+my @GetOpts;
+
+########################################
+
+=item B<--help>
+
+Z<>
+
+=cut
+
+my $help = 0;
+push @GetOpts => (
+    'help' => \$help
+);
+
+########################################
+
+=item B<--socket> <unix domain socket>
+
+The GELF socket we should log to.
+
+Defaults to I</var/run/gelf.sock>.
+
+=cut
+
+my $socket = '/var/run/gelf.sock';
+push @GetOpts => (
+    'socket=s'=> \$socket
+);
+
+########################################
+
+=item B<--extra> <key=value>
+
+Put extra field into GELF message
+
+May be used more than once
+
+=cut
+
+my @extras;
+push @GetOpts => (
+    'extra=s' => \@extras
+);
+
+########################################
+
+=item B<--timeout> <seconds>
+
+Command execution timeout
+
+Defaults to 30 seconds
+
+=cut
+
+my $timeout = 30;
+push @GetOpts => (
+    'timeout=i' => \$timeout
+);
+
+########################################
+
+=item B<--name> <name>
+
+Name for use in log message
+
+Defaults to command basename
+
+=cut
+
+my $name;
+push @GetOpts => (
+    'name=s' => \$name
+);
+
+########################################
+
+=item B<--fork>
+
+Fork before subprocess execution
+
+The parent process exits immediately
+
+Default is not forking, so the main process waits until everything is done
+
+This option is mutually exclusive with B<--debug>
+
+=cut
+
+my $fork = 0;
+push @GetOpts => (
+    'fork' => \$fork
+);
+
+########################################
+
+=item B<--log-env>
+
+Put full environment variables in log message
+
+Disabled by default
+
+=cut
+
+my $env = 0;
+push @GetOpts => (
+    'log-env' => \$env
+);
+
+########################################
+
+=item B<--chdir> <directory>
+
+Change into directory before command execution
+
+=cut
+
+my $chdir;
+push @GetOpts => (
+    'chdir=s' => \$chdir
+);
+
+########################################
+
+=item B<--debug>
+
+Do not log at all, but put some debug output to stdout
+
+This option is mutually exclusive with B<--fork>
+
+=cut
+
+my $debug = 0;
+push @GetOpts => (
+    'debug' => \$debug
+);
+
+=back
+
+=cut
+
+################################################################################
+
+# Facility name, not changable
+my $facility = 'cronlog';
+
+my $uid = getuid();
+my $user = scalar getpwuid($uid);
+
+# Get last eval() error and strip off " at ... line ..." from end
+sub evalerr {
+    my $err = shift || $@ || return;
+    $err =~ s{ \s+ at \s+ (?<file> \S+ ) \s+ line \s+ (?<line> \S+? ) \.? \s* $}{}xgsi;
+    return $err;
+}
+
+GetOptions(@GetOpts) or pod2usage(2);
+
+if ($help) {
+    pod2usage(1);
+    exit 1;
+}
+
+# Any more arguments (separated by two dashes --) is the actual command (with arguments) to be executed, which is required
+unless (@ARGV) {
+    pod2usage(2);
+    exit 2;
+}
+
+# Split command and arguments
+my ($command, @arguments) = @ARGV;
+
+# global gelf extras
+my %gextras = map { split(m{=}, $_, 2) } @extras;
+
+################################################################################
+
+# Connect to GELF socket
+my $logger = Log::GelfSocket->new(socket => $socket);
+
+################################################################################
+
+# At this point minimal information for error logging is available
+sub error {
+    my ($msg, %lextras) = @_;
+    my %log = (
+        %gextras,
+        %lextras,
+        facility    => $facility,
+        timestamp   => $^T,
+        command     => $command,
+        arguments   => \@arguments,
+        cwd         => getcwd,
+        uid         => $uid,
+        user        => $user,
+    );
+    if ($env) {
+        $log{env}   = \%ENV;
+    }
+    if ($debug) {
+        print "$msg ".Dumper(\%log);
+    } else {
+        $logger->log(2, $msg, %log);
+    }
+    exit 0;
+}
+
+################################################################################
+
+# Resolve any non-relative/non-absolut command with PATH environment variable
+unless ($command =~ m{/}) {
+    # PATH()->Whence() returns all possible matches, filter non-executables
+    my @path = grep -x, PATH->Whence($command);
+    unless (@path) {
+        error("No executable found for $command");
+    }
+    # Return first match
+    $command = $path[0];
+}
+
+# If name not specifically given on line, default to the basename of the command
+unless ($name) {
+    $name = basename($command);
+}
+
+# Enter directory
+if ($chdir) {
+    unless (chdir($chdir)) {
+        error("Error before executing $name: cannot change into $chdir: $!");
+    }
+}
+
+# The command must exists at all
+unless (-e $command) {
+    error("Error before executing $name: file $command not found");
+}
+
+# And must be executable, too
+unless (-x $command) {
+    error("Error before executing $name: file $command is not executable");
+}
+
+################################################################################
+
+# Fork if requested
+if ($fork) {
+    if ($debug) {
+        error("--fork and --debug are mutually exclusive");
+    }
+    my $pid = fork;
+    if ($pid) {
+        # Successful fork, parent process
+        exit 0;
+    }
+    unless (defined $pid) {
+        # Fork NOT successful
+        error("Error before executing $name: cannot fork: $!");
+    }
+    # Fork successful, child process, go ahead...
+    # Suppress any output, use logging instead
+    close STDOUT;
+    close STDERR;
+}
+
+################################################################################
+
+# Initialize buffers
+my $stdout = '';
+my $stderr = '';
+
+# Start timer
+my @t0 = gettimeofday;
+
+eval {
+    # IPC::Run does almost everything
+    run(
+        debug => $debug,
+        [ $command => @arguments ],
+        \undef, # close STDIN immediately
+        \$stdout,
+        \$stderr,
+        timeout($timeout),
+    );
+};
+
+# Stop timer
+my $td = tv_interval(\@t0);
+
+# Shift exit code by eight bits to get real exit code
+my $exit = $? >> 8;
+
+################################################################################
+
+my $level;
+my $msg;
+
+if ($@) {
+    # eval() error, maybe timeout but stdout/stderr could be filled
+    my $err = evalerr();
+    error("Error while executing $name: $err");
+} elsif ($exit != 0) {
+    $msg = "Unsuccessfull execution of $name";
+    # If stdout is empty and stderr non-empty...
+    if ($stdout =~ m{^\s*$}s and $stderr =~ m{^\s*(.+?)\s*$}s) {
+        # put stderr into full_message
+        $stdout = $1;
+        # and set error empty
+        $stderr = undef;
+    }
+    $level = 'error';
+} elsif ($stderr) {
+    $msg = "Successfull execution of $name (but see notes)";
+    $level = 'notice';
+} else {
+    $msg = "Successfull execution of $name";
+    $level = 'info';
+}
+
+$msg .= ' after '.duration($td);
+
+################################################################################
+
+my %log = (
+    %gextras, ## global gelf extras
+    facility        => $facility,
+    timestamp       => $^T,
+    command         => $command,
+    arguments       => \@arguments,
+    full_message    => $stdout,
+    error           => $stderr,
+    exitcode        => $exit,
+    duration        => $td,
+    timeout         => $timeout,
+    cwd             => getcwd,
+    uid             => $uid,
+    user            => $user,
+);
+
+if ($env) {
+    $log{env} = \%ENV;
+}
+
+if ($debug) {
+    print "$level --- $msg ".Dumper(\%log);
+} else {
+    $logger->log($level, $msg, %log);
+}
+
+################################################################################
+
+exit 0;

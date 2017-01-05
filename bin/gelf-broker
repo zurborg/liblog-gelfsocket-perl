@@ -1,0 +1,881 @@
+#!/usr/bin/perl
+
+# PODNAME: gelf-broker
+
+use strictures 2;
+
+# ABSTRACT: listen on an unix domain socket and forward messages to graylog
+
+use bytes;
+use boolean;
+
+use EV;
+use IO::Async::Loop::EV;
+use IO::Async::Listener;
+use IO::Async::Socket;
+use IO::Async::Signal;
+use IO::Async::Timer::Periodic;
+use IO::Async::File;
+use IO::Async::SSL;
+use IO::Socket;
+use IO::Socket::SSL;
+
+use Fcntl qw(LOCK_EX LOCK_NB O_CREAT O_EXCL O_WRONLY);
+
+use YAML;
+use Regexp::Common qw(net);
+use Getopt::Long;
+use Pod::Usage;
+use Log::GelfSocket ();
+
+use Log::Any '$log', filter => \&logfilter;
+use Log::Any::Adapter;
+
+use Time::Monotonic;
+
+use Try::Tiny;
+
+use constant STATUS_UNKNOWN     => 0;
+use constant STATUS_CONNECTING  => 1;
+use constant STATUS_CONNECTED   => 2;
+use constant STATUS_ERROR       => 3;
+use constant STATUS_SHUTDOWN    => 4;
+
+use constant PROTO_TCP =>  6;
+use constant PROTO_UDP => 17;
+
+use constant LOGLEVELS => [qw[ fatal alert critical error warning notice info debug trace ]];
+
+our $T0;
+
+BEGIN {
+    $SIG{$_} = 'IGNORE' foreach keys %SIG;
+    undef $SIG{$_} foreach qw(HUP INT TERM QUIT USR1 USR2);
+    close STDIN;
+    $T0 = Time::Monotonic->new;
+}
+
+sub logfilter
+{
+    my ($category, $level, $message) = @_;
+    return sprintf('%s UTC [%s] %8s: %s', scalar(gmtime time), $category, LOGLEVELS->[$level], $message);
+}
+
+sub striperr (_) ## no critic
+{
+    my $e = shift || $@ || return;
+    $e =~ s{ \s+ at \s+ (?<file> \S+ ) \s+ line \s+ (?<line> \S+ ) \s* $}{}xsir;
+}
+
+my @END;
+
+END {
+    while (my $sub = pop @END) {
+        eval { $sub->() };
+        warn $@ if $@;
+    }
+}
+
+sub end (&) ## no critic
+{
+    push @END => @_;
+}
+
+my $config = {
+    pidfile => '/var/run/gelf-broker.pid',
+};
+
+################################################################################
+
+=head1 SYNOPSIS
+
+gelf-broker --help
+
+gelf-broker [options]
+
+=head1 OPTIONS
+
+=over 4
+
+=cut
+
+my @GetOpts;
+
+########################################
+
+=item B<--help>
+
+Z<>
+
+=cut
+
+my $help = 0;
+push @GetOpts => (
+    'help' => \$help
+);
+
+########################################
+
+=item B<--log> <level>
+
+Log all messages to stderr
+
+=cut
+
+my $logstderr = undef;
+push @GetOpts => (
+    'log=s'=> \$logstderr
+);
+
+########################################
+
+=item B<--listen> <unix domain socket>
+
+The GELF socket we should listen on.
+
+Defaults to I</var/run/gelf.sock>.
+
+=cut
+
+$config->{socket} = '/var/run/gelf.sock';
+push @GetOpts => (
+    'listen=s'=> \$config->{socket}
+);
+
+########################################
+
+=item B<--graylog> <graylog tcp server>
+
+The Graylog TCP socket we should connect to.
+
+Defaults to I<localhost:12222>.
+
+=cut
+
+$config->{graylog} = 'localhost:12222';
+push @GetOpts => (
+    'socket=s'=> \$config->{graylog}
+);
+
+########################################
+
+=item B<--config> <path to config file>
+
+Defaults to I</etc/gelf-broker.yml>.
+
+=cut
+
+my $configfile = '/etc/gelf-broker.yml';
+push @GetOpts => (
+    'config=s'=> \$configfile
+);
+
+########################################
+
+=back
+
+=cut
+
+GetOptions(@GetOpts) or pod2usage(2);
+
+if ($help) {
+    pod2usage(1);
+    exit 1;
+}
+
+if (@ARGV) {
+    pod2usage(2);
+    exit 2;
+}
+
+########################################
+
+if ($logstderr) {
+    Log::Any::Adapter->set('Stderr', log_level => $logstderr);
+}
+
+my $loop = IO::Async::Loop::EV->new;
+
+my $listener_handle;
+my $listener_signature;
+
+my $graylogger_handle;
+my $graylogger_status = STATUS_UNKNOWN;
+
+my $shutdown = false;
+
+my @buffer;
+
+end { $log->info("exit"); };
+
+sub test_unix_socket
+{
+    my $file = shift || return;
+    my $socket = IO::Socket::UNIX->new(
+        Type => SOCK_DGRAM,
+        Peer => $file,
+    );
+    if ($socket) {
+        $socket->close;
+        undef $socket;
+        return true;
+    } else {
+        $log->debug("test failed: cannot connect to unix domain socket $file: $!");
+        return false;
+    }
+}
+
+sub file_signature
+{
+    my $file = shift || return;
+    my @stat = stat $file;
+    unless (@stat) {
+        $log->notice("cannot stat file $file: $!");
+        return;
+    }
+    use Config;
+    if ($Config{intsize} == 2) {
+        return pack(LL => @stat[0..1]);
+    }
+    if ($Config{intsize} == 4) {
+        return pack(QQ => @stat[0..1]);
+    }
+    die "bad intsize: ".$Config{intsize};
+}
+
+sub read_config
+{
+    my $init = boolean(shift) || false;
+
+    return if $shutdown;
+
+    try {
+        my $old = $config;
+        my $new = YAML::LoadFile($configfile);
+
+        unless (ref $new eq 'HASH') {
+            die "inproper format, expected key-value pairs\n";
+        }
+
+        unless (exists $new->{graylog}) {
+            die "inproper format, 'graylog' param not found\n";
+        }
+
+        unless (exists $new->{socket}) {
+            die "inproper format, 'socket' param not found\n";
+        }
+
+        unless ($init) {
+            unless ($old->{graylog} eq $new->{graylog}) {
+                $log->infof("new graylog endpoint: %s", $new->{graylog});
+                if ($graylogger_handle) {
+                    $log->info("close graylog handle when buffer empty");
+                    $graylogger_status = STATUS_SHUTDOWN;
+                    $graylogger_handle->close_when_empty;
+                }
+            }
+            unless ($old->{socket} eq $new->{socket}) {
+                $log->infof("new listener socket: %s", $new->{socket});
+                if ($listener_handle) {
+                    $log->info("close listener handle");
+                    $listener_handle->close;
+                    undef $listener_handle;
+                    unlink $old->{socket};
+                    bind_listener();
+                }
+            }
+        }
+
+        $config = $new;
+
+        return true;
+    } catch {
+        $log->errorf("cannot load config file $configfile: %s", striperr);
+        return false;
+    };
+}
+
+sub read_buffer
+{
+    my $file = $config->{buffer} || return;
+    if (open (my $fh, '<', $file)) {
+        unless (flock($fh, LOCK_EX | LOCK_NB)) {
+            $log->warn("cannot obtain exclusive lock for $file: $!");
+            close $fh;
+            return false;
+        }
+        my $i;
+        if (read($fh, my $lenb, 4) == 4) {
+            $i = unpack(N => $lenb);
+        } else {
+            $log->warn("cannot read header from $file: $!");
+            close $fh;
+            return false;
+        }
+        while ($i > 0 and read($fh, my $lenb, 2) == 2) {
+            my $length = unpack(n => $lenb);
+            if (read ($fh, my $line, $length) == $length) {
+                push @buffer => $line;
+                $i--;
+            } else {
+                $log->warn("cannot read $length bytes from $file: $!");
+                close $fh;
+                return false;
+            }
+        }
+        if ($i > 0) {
+            $log->warn("$i messages left in buffer cache");
+        }
+        close $fh;
+        return true;
+    } else {
+        $log->warn("cannot open file $file for reading: $!");
+        return false;
+    }
+}
+
+sub write_buffer
+{
+    my $file = $config->{buffer} || return;
+    if (open (my $fh, '>', $file)) {
+        unless (flock($fh, LOCK_EX | LOCK_NB)) {
+            $log->warn("cannot obtain exclusive lock for $file: $!");
+            close $fh;
+            return false;
+        }
+        print $fh pack(N => scalar(@buffer));
+        my $i = 0;
+        foreach my $line (@buffer) {
+            print $fh pack(n => length $line);
+            print $fh $line;
+            $i++;
+        }
+        close $fh;
+        $log->info("stored $i messages in cache");
+        return true;
+    } else {
+        $log->warn("cannot open file $file for writing: $!");
+        return false;
+    }
+}
+
+sub bind_listener
+{
+    return if $shutdown;
+    my $file = $config->{socket};
+    if (-e $file) {
+        $log->notice("file $file exists");  
+        if (-S $file) {
+            if (test_unix_socket($file)) {
+                $log->fatal("there is already an active socket at $file");
+                &shutdown();
+            }
+        }
+        unless (unlink $file) {
+            $log->error("cannot unlink $file: $!");
+            return false;
+        }
+    }
+    if ($listener_handle) {
+        $log->notice("a listener is still active, closing");
+        $listener_handle->close;
+        undef $listener_handle;
+    }
+    my $socket = IO::Socket::UNIX->new(
+        Type    => SOCK_DGRAM,
+        Listen  => SOMAXCONN,
+        Local   => $file,
+    );
+    if ($socket) {
+        $listener_signature = file_signature($file);
+        $listener_handle = IO::Async::Socket->new(
+            read_handle     => $socket,
+            on_closed       => sub {
+                $log->debug("listener closed");
+                undef $listener_handle;
+            },
+            on_recv         => \&read_message,
+            on_recv_error   => sub { $log->warn("recv error on socket $file: @_ ($!)"); },
+        );
+        $loop->add($listener_handle);
+        $log->info("now listening on socket $file");
+    } else {
+        $log->error("cannot listen on $file: $!");
+        return false;
+    }
+}
+
+sub check_listener
+{
+    my $file = $config->{socket};
+
+    unless (-e $file) {
+        $log->warn("socket disappeared");        
+        return false;
+    }
+
+    unless (-S $file) {
+        $log->warn("socket is no longer a socket");
+        return false;
+    }
+
+    unless ($listener_signature eq file_signature($file)) {
+        $log->warn("socket signature changed");
+        return false;
+    }
+
+    unless (test_unix_socket($file)) {
+        $log->warn("socket connection failed");
+        return false;
+    }
+
+    return true;
+}
+
+sub write_status_file
+{
+    my $file = $config->{status} || return;
+    YAML::DumpFile($file, {
+        pid     => $$,
+        buffer  => scalar(@buffer),
+        started => $^T,
+        uptime  => $T0->now,
+        listener => {
+            socket  => $config->{socket},
+            signature => ($listener_signature ? unpack('h*' => $listener_signature) : undef),
+        },
+        socket  => $config->{socket},
+        graylog => {
+            status  => $graylogger_status,
+            hostport => $config->{graylog},
+        },
+    });
+    $log->debug("status file written to $file");
+}
+
+sub read_message
+{
+    my ($socket, $message, $address) = @_;
+    my $bytes = length $message;
+    $log->debug("received $bytes bytes");
+    if ($bytes > 2) {
+        my $len = unpack(n => substr($message, 0, 2));
+        if ($len + 2 == length $message) {
+            $message = substr($message, 2, $len);
+            $log->debug("got message of $len bytes");
+            push @buffer => $message;
+        } else {
+            $log->warn("not enough bytes received: $bytes");
+        }
+    } else {
+        $log->warn("not enough bytes received: $bytes");
+    }
+}
+
+sub split_hostport
+{
+    my ($hostport, $default_port) = @_;
+    $default_port ||= 12222;
+    my $IPv4 = $RE{net}{IPv4};
+    my $IPv6 = $RE{net}{IPv6};
+    my $FQDN = $RE{net}{domain};
+    if ($hostport =~ m{^ (?<Host> (?<IPv4> $IPv4 ) | \[ (?<IPv6> $IPv6 ) \] | (?<FQDN> $FQDN ) ) : (?<Port> \d+ ) $}x) {
+        if ($+{IPv4}) {
+            return ('inet',  $+{IPv4}, int $+{Port});
+        }
+        if ($+{IPv6}) {
+            return ('inet6', $+{IPv6}, int $+{Port});
+        }
+        if ($+{FQDN}) {
+            return (undef,   $+{FQDN}, int $+{Port});
+        }
+    } elsif ($hostport =~ m{^ (?<IPv4> $IPv4 ) | (?<IPv6> $IPv6 ) | (?<FQDN> $FQDN ) $}x) {
+        if ($+{IPv4}) {
+            return ('inet',  $+{IPv4}, $default_port);
+        }
+        if ($+{IPv6}) {
+            return ('inet6', $+{IPv6}, $default_port);
+        }
+        if ($+{FQDN}) {
+            return (undef,   $+{FQDN}, $default_port);
+        }
+    }
+    return;
+}
+
+sub connect_graylogger
+{
+    return if $shutdown;
+    undef $graylogger_handle;
+    $graylogger_status = STATUS_CONNECTING;
+
+    my ($family, $host, $port) = split_hostport($config->{graylog});
+
+    unless ($host and $port) {
+        $log->errorf("bad hostname/port: %s", $config->{graylog});
+        return;
+    }
+
+    my %extras;
+
+    my $ssl = $config->{ssl};
+    if (ref $ssl eq 'HASH') {
+        foreach my $key (keys %$ssl) {
+            if (defined $ssl->{$key}) {
+                $extras{"SSL_$key"} = $ssl->{$key};
+            }
+        }
+        delete $extras{"SSL_$_"} foreach (qw(
+            server
+            startHandshake
+            ca
+            client_ca
+            cert_file
+            cert
+            key_file
+            key
+            password_cb
+            use_cert
+            dh
+            verify_mode
+            verify_callback
+            reuse_ctx
+            ocsp_staple_callback
+            create_ctx_callback
+            session_cache_size
+            session_cache
+            session_key
+            error_trap
+            npn_protocols
+            alpn_protocols
+            ticket_keycb 
+        ));
+        $extras{SSL_verify_mode} = SSL_VERIFY_PEER;
+    } else {
+        $ssl = false;
+    }
+
+    $loop->connect(
+        %extras,
+        extensions  => [ $ssl ? 'SSL' : () ],
+        family      => $family,
+        host        => $host,
+        service     => $port,
+        socktype    => 'stream',
+        protocol    => PROTO_TCP,
+        on_stream   => sub
+        {
+            my ($handle) = @_;
+            $log->info("connected to graylog host $host at port $port");
+            $graylogger_handle = $handle;
+            configure_graylogger();
+        },
+        on_connect_error => sub
+        {
+            my ($syscall, $error) = @_;
+            undef $graylogger_handle;
+            $log->error("graylog connection to host $host at port $port failed - $syscall reported: $error");
+            $graylogger_status = STATUS_ERROR;
+        },
+        on_resolve_error => sub
+        {
+            my ($error) = @_;
+            undef $graylogger_handle;
+            $log->error("cannot resolve graylog hostname $host");
+            $graylogger_status = STATUS_ERROR;
+        },
+        on_ssl_error => sub
+        {
+            my ($error) = @_;
+            undef $graylogger_handle;
+            $log->error("graylog SSL error: $error");
+            $graylogger_status = STATUS_ERROR;
+        },
+    );
+    $graylogger_handle = false;
+}
+
+sub configure_graylogger
+{
+    return unless $graylogger_handle;
+    $graylogger_handle->configure(
+        autoflush => true,
+        want_readready => true,
+        want_writeready => true,
+        want_writeready => true,
+        on_read => sub
+        {
+            $log->notice("graylog read data");
+            return 0;
+        },
+        on_closed => sub
+        {
+            $log->debug("graylog disconnected");
+            undef $graylogger_handle;
+            $graylogger_status = STATUS_UNKNOWN;
+        },
+        on_read_eof => sub
+        {
+            $log->warn("graylog reader eof");
+            if (defined $graylogger_handle) {
+                $graylogger_handle->close_now;
+                $graylogger_status = STATUS_ERROR;
+            }
+        },
+        on_write_eof => sub
+        {
+            $log->warn("graylog writer eof");
+            $graylogger_status = STATUS_ERROR;
+            if (defined $graylogger_handle) {
+                $graylogger_handle->close_now;
+            }
+        },
+        on_read_error => sub
+        {
+            my $error = pop;
+            $log->error("graylog read error: $error");
+            $graylogger_status = STATUS_ERROR;
+            if (defined $graylogger_handle) {
+                $graylogger_handle->close_now;
+            }
+        },
+        on_write_error => sub
+        {
+            my $error = pop;
+            $log->error("graylog write error: $error");
+            $graylogger_status = STATUS_ERROR;
+            if (defined $graylogger_handle) {
+                $graylogger_handle->close_now;
+            }
+        },
+    );
+    $graylogger_status = STATUS_CONNECTED;
+}
+
+sub drain_buffer
+{
+    unless ($graylogger_status == STATUS_CONNECTED) {
+        return;
+    }
+    my $i = 0;
+    while (@buffer) {
+        unless ($graylogger_handle and $graylogger_status == STATUS_CONNECTED) {
+            $log->notice("graylog not available, but there pending messages waiting in buffer");
+            last;
+        }
+        my $message = shift @buffer;
+        unless ($message) {
+            next;
+        }
+        $log->debug("send message");
+        $graylogger_handle->write(
+            $message.chr(0),
+            on_error => sub
+            {
+                my $error = pop;
+                $log->warn("cannot send message: $error, rescheduling message");
+                push @buffer => $message;
+            },
+        );
+        $i++;
+    }
+    $log->debug("sent $i messages") if $i > 0;
+}
+
+sub shutdown
+{
+    return if $shutdown;
+    $shutdown = true;
+
+    write_buffer();
+
+    if ($listener_handle) {
+        $log->debug("listener handle active, closing");
+        $listener_handle->close;
+        unlink $config->{socket};
+    }
+
+    if ($graylogger_handle) {
+        $log->debug("graylog handle active, closing");
+        $graylogger_handle->close_now;
+    }
+
+    $loop->stop;
+}
+
+unless (read_config(true)) {
+    die "no configuration found\n";
+}
+
+write_status_file();
+
+my $pidfh;
+
+if (my $pidfile = $config->{pidfile}) {
+    if (-e $pidfile) {
+        unless (open ($pidfh, '<', $pidfile)) {
+            die "cannot read pidfile $pidfile: $!\n";
+        }
+        my $pid = <$pidfh>;
+        close $pidfh;
+        if ($pid) {
+            $pid =~ s{\D}{}sg;
+            if (-d "/proc") {
+                if (-e "/proc/$pid") {
+                    die "there is already an active process with pid $pid as read from pidfile $pidfile\n";
+                }
+            } else {
+                if (kill 0 => $pid) {
+                    die "there is already an active process with pid $pid as read from pidfile $pidfile\n";
+                } else {
+                    die "pidfile $pidfile found, checking pid $pid reported: $! - please check process and delete pidfile if needed\n";
+                }
+            }
+        }
+        if (unlink $pidfile) {
+            $log->notice("pidfile $pidfile found and removed");
+        } else {
+            die "cannot remove pidfile $pidfile: $!\n";
+        }
+    }
+
+    if (sysopen($pidfh, $pidfile, O_CREAT | O_EXCL | O_WRONLY)) {
+        if (flock ($pidfh, LOCK_EX | LOCK_NB)) {
+            local $| = 1;
+            syswrite($pidfh, $$);
+            $log->debug("pidfile $pidfile locked and written");
+            end {
+                close $pidfh;
+                unless (unlink $pidfile) {
+                    $log->warn("cannot unlink pidfile $pidfile: $!");
+                }
+                $log->debug("pidfile $pidfile unlocked, closed and unlinked");
+            };
+        } else {
+            die "cannot obtain lock on pidfile $pidfile: $!\n";
+        }
+    } else {
+        die "cannot create pidfile $pidfile: $!\n";
+    }
+} else {
+    $log->notice("no pidfile defined");
+}
+
+read_buffer();
+
+$loop->add(IO::Async::Timer::Periodic->new(
+    interval => 60,
+    reschedule => 'drift',
+    on_tick => sub
+    {
+        write_buffer();
+        if ($graylogger_handle and $graylogger_status == STATUS_CONNECTED) {
+            $log->debug("keep alive graylog connection");
+            $graylogger_handle->write(chr(0));
+        }
+    }
+)->start);
+
+$loop->add(IO::Async::Timer::Periodic->new(
+    interval => 1/5,
+    reschedule => 'skip',
+    on_tick => \&drain_buffer,
+)->start);
+
+$loop->add(IO::Async::Timer::Periodic->new(
+    interval => 2,
+    first_interval => 0,
+    reschedule => 'skip',
+    on_tick => sub
+    {
+        if ($listener_handle) {
+            unless (check_listener()) {
+                bind_listener();
+            }
+        } else {
+            $log->debug("not listening, binding");
+            bind_listener();
+        }
+    }
+)->start);
+
+$loop->add(IO::Async::Timer::Periodic->new(
+    interval => 5,
+    first_interval => 0,
+    reschedule => 'skip',
+    on_tick => sub
+    {
+        unless (defined $graylogger_handle) {
+            $log->debug("not connected, connecting");
+            connect_graylogger();
+        }
+    }
+)->start) if true;
+
+$loop->add(IO::Async::Signal->new(
+    name => 'INT',
+    on_receipt => sub
+    {
+        if ($logstderr) {
+            local $| = 1;
+            print STDERR "\r\n";
+        }
+        $log->debug("got INT signal");
+        &shutdown();
+    }
+));
+
+$loop->add(IO::Async::Signal->new(
+    name => 'TERM',
+    on_receipt => sub
+    {
+        $log->debug("got TERM signal");
+        &shutdown();
+    }
+));
+
+$loop->add(IO::Async::Signal->new(
+    name => 'QUIT',
+    on_receipt => sub
+    {
+        $log->debug("got QUIT signal");
+        &shutdown();
+    }
+));
+
+$loop->add(IO::Async::Signal->new(
+    name => 'USR1',
+    on_receipt => sub
+    {
+        $log->debug("got USR1 signal");
+        read_config(false);
+    }
+));
+
+$loop->add(IO::Async::Signal->new(
+    name => 'USR2',
+    on_receipt => sub
+    {
+        $log->debug("got USR2 signal");
+        write_status_file();
+    }
+));
+
+$loop->add(IO::Async::Signal->new(
+    name => 'HUP',
+    on_receipt => sub
+    {
+        $log->debug("got HUP signal");
+        if ($graylogger_status == STATUS_CONNECTED) {
+            $log->info("restart graylog connetion due to user request");
+            $graylogger_status = STATUS_SHUTDOWN;
+            $graylogger_handle->close_when_empty;
+        }
+    }
+));
+
+$log->info("starting");
+
+$loop->run;
+
+$log->info("loop stopped");
