@@ -14,7 +14,6 @@ use FindBin qw($RealBin $RealScript);
 use MIME::Base64 qw(encode_base64url decode_base64url);
 use Pod::Usage;
 
-use lib "$RealBin/../lib";
 use Log::GelfSocket;
 
 use constant FMT_VERSION => 1;
