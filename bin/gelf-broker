@@ -388,6 +388,7 @@ sub bind_listener
         Local   => $file,
     );
     if ($socket) {
+        chmod(0666, $file);
         $listener_signature = file_signature($file);
         $listener_handle = IO::Async::Socket->new(
             read_handle     => $socket,
@@ -420,6 +421,7 @@ sub check_listener
         return false;
     }
 
+    chmod(0666, $file);
     unless ($listener_signature eq file_signature($file)) {
         $log->warn("socket signature changed");
         return false;
