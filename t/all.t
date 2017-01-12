@@ -24,9 +24,7 @@ my $listener = IO::Socket::UNIX->new(
 sub readlog {
     $listener->recv(my $json, 2**16, MSG_DONTWAIT);
     return unless defined $json and length $json;
-    use bytes;
-    my $len = unpack(n => substr($json, 0, 2));
-    my $gelf = decode_json(substr($json, 2, $len));
+    my $gelf = decode_json($json);
 }
 
 

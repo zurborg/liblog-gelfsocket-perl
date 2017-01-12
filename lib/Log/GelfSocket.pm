@@ -355,13 +355,15 @@ sub flush
         }
     }
 
+    use bytes;
+
     while (@{$self->_buffer}) {
         my $message = shift(@{$self->_buffer}) || next;
         my $length = length $message;
-        my $sent = $self->_handle->send(pack(n => $length) . $message);
+        my $sent = $self->_handle->send($message);
         my $error = $!;
         if (defined $sent) {
-            if ($sent == $length + 2) {
+            if ($sent == $length) {
                 next;
             } elsif ($error) {
                 push @{$self->_buffer} => $message;

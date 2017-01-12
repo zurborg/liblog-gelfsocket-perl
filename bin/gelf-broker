@@ -461,18 +461,7 @@ sub read_message
     my ($socket, $message, $address) = @_;
     my $bytes = length $message;
     $log->debug("received $bytes bytes");
-    if ($bytes > 2) {
-        my $len = unpack(n => substr($message, 0, 2));
-        if ($len + 2 == length $message) {
-            $message = substr($message, 2, $len);
-            $log->debug("got message of $len bytes");
-            push @buffer => $message;
-        } else {
-            $log->warn("not enough bytes received: $bytes");
-        }
-    } else {
-        $log->warn("not enough bytes received: $bytes");
-    }
+    push @buffer => $message;
 }
 
 sub split_hostport
