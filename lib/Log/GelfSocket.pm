@@ -224,10 +224,11 @@ Croaks if there is an error.
 
 =cut
 
-sub log 
+sub _prepare
 {
     my $self = shift;
     my ($level, $message, %gelf) = @_;
+
     $level ||= $self->default_level;
 
     croak "log message without level"   unless defined $level;
@@ -297,7 +298,18 @@ sub log
     $gelf{version}  = GELF_SPEC_VERSION;
     $gelf{level}    = $level;
 
-    my $json = decode_utf8($self->_json->encode(\%gelf));
+    if (wantarray) {
+        return %gelf;
+    } else {
+        return decode_utf8($self->_json->encode(\%gelf));
+    }
+}
+
+sub log
+{
+    my $self = shift;
+
+    my $json = $self->_prepare(@_);
 
     push @{$self->_buffer} => $json;
 
