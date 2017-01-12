@@ -267,9 +267,9 @@ sub _prepare
     $gelf{host}             = delete $gelf{_host}           if defined $gelf{_host};
     $gelf{timestamp}        = delete $gelf{_time}           if defined $gelf{_time};
     $gelf{timestamp}        = delete $gelf{_timestamp}      if defined $gelf{_timestamp};
-    $gelf{full_message}     = delete $gelf{_message}        if defined $gelf{_message};
-    $gelf{full_message}     = delete $gelf{_full_message}   if defined $gelf{_full_message};
-    $gelf{short_message}    = delete $gelf{_short_message}  if defined $gelf{_short_message};
+    $message        .= "\n" . delete $gelf{_message}        if defined $gelf{_message};
+    $message        .= "\n" . delete $gelf{_short_message}  if defined $gelf{_short_message};
+    $message        .= "\n" . delete $gelf{_full_message}   if defined $gelf{_full_message};
 
     # hostname defaults to system hostname...
     $gelf{host} ||= HOSTNAME;
@@ -289,7 +289,7 @@ sub _prepare
 
     if ($message =~ m{\n}s) {
         my ($short, $full) = split m{\n}s, $message, 2;
-        $gelf{short_message} = _trim(join("  ", map { $_ // '' } ($short, $gelf{short_message})));
+        $gelf{short_message} = _trim(join("\n", map { $_ // '' } ($short, $gelf{short_message})));
         $gelf{ full_message} = _trim(join("\n", map { $_ // '' } ($full , $gelf{ full_message})));
     } else {
         $gelf{message} = $message;
