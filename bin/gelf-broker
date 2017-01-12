@@ -49,6 +49,7 @@ use constant LOGLEVELS => [qw[ fatal alert critical error warning notice info de
 our $T0;
 
 BEGIN {
+    $| = 1;
     $SIG{$_} = 'IGNORE' foreach keys %SIG;
     undef $SIG{$_} foreach qw(HUP INT TERM QUIT USR1 USR2);
     close STDIN;
