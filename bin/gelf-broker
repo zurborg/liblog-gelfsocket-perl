@@ -670,7 +670,7 @@ sub drain_buffer
         }
         $log->debug("send message");
         $graylogger_handle->write(
-            $message.NULL,
+            $message.NUL,
             on_error => sub
             {
                 my $error = pop;
