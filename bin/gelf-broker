@@ -71,6 +71,12 @@ sub striperr (_) ## no critic
     $e =~ s{ \s+ at \s+ (?<file> \S+ ) \s+ line \s+ (?<line> \S+ ) \s* $}{}xsir;
 }
 
+sub throw
+{
+    my ($msg, @args) = @_;
+    die sprintf($msg.EOL, @args);
+}
+
 my @END;
 
 END {
@@ -244,7 +250,7 @@ sub file_signature
     if ($Config{intsize} == 4) {
         return pack(QQ => @stat[0..1]);
     }
-    die "bad intsize: ".$Config{intsize};
+    throw("bad intsize: %d", $Config{intsize});
 }
 
 sub read_config
@@ -258,15 +264,15 @@ sub read_config
         my $new = YAML::LoadFile($configfile);
 
         unless (ref $new eq 'HASH') {
-            die "inproper format, expected key-value pairs\n";
+            throw "inproper format, expected key-value pairs";
         }
 
         unless (exists $new->{graylog}) {
-            die "inproper format, 'graylog' param not found\n";
+            throw "inproper format, 'graylog' param not found";
         }
 
         unless (exists $new->{socket}) {
-            die "inproper format, 'socket' param not found\n";
+            throw "inproper format, 'socket' param not found";
         }
 
         unless ($init) {
@@ -699,7 +705,7 @@ sub shutdown
 }
 
 unless (read_config(true)) {
-    die "no configuration found\n";
+    throw "no configuration found";
 }
 
 write_status_file();
@@ -709,7 +715,7 @@ my $pidfh;
 if (my $pidfile = $config->{pidfile}) {
     if (-e $pidfile) {
         unless (open ($pidfh, '<', $pidfile)) {
-            die "cannot read pidfile $pidfile: $!\n";
+            throw "cannot read pidfile $pidfile: $!";
         }
         my $pid = <$pidfh>;
         close $pidfh;
@@ -717,20 +723,20 @@ if (my $pidfile = $config->{pidfile}) {
             $pid =~ s{\D}{}sg;
             if (-d "/proc") {
                 if (-e "/proc/$pid") {
-                    die "there is already an active process with pid $pid as read from pidfile $pidfile\n";
+                    throw "there is already an active process with pid $pid as read from pidfile $pidfile";
                 }
             } else {
                 if (kill 0 => $pid) {
-                    die "there is already an active process with pid $pid as read from pidfile $pidfile\n";
+                    throw "there is already an active process with pid $pid as read from pidfile $pidfile";
                 } else {
-                    die "pidfile $pidfile found, checking pid $pid reported: $! - please check process and delete pidfile if needed\n";
+                    throw "pidfile $pidfile found, checking pid $pid reported: $! - please check process and delete pidfile if needed";
                 }
             }
         }
         if (unlink $pidfile) {
             $log->notice("pidfile $pidfile found and removed");
         } else {
-            die "cannot remove pidfile $pidfile: $!\n";
+            throw "cannot remove pidfile $pidfile: $!";
         }
     }
 
@@ -747,10 +753,10 @@ if (my $pidfile = $config->{pidfile}) {
                 $log->debug("pidfile $pidfile unlocked, closed and unlinked");
             };
         } else {
-            die "cannot obtain lock on pidfile $pidfile: $!\n";
+            throw "cannot obtain lock on pidfile $pidfile: $!";
         }
     } else {
-        die "cannot create pidfile $pidfile: $!\n";
+        throw "cannot create pidfile $pidfile: $!";
     }
 } else {
     $log->notice("no pidfile defined");
