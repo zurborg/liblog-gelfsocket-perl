@@ -44,6 +44,9 @@ use constant STATUS_SHUTDOWN    => 4;
 use constant PROTO_TCP =>  6;
 use constant PROTO_UDP => 17;
 
+use constant NUL => "\x00";
+use constant EOL => "\r\n";
+
 use constant LOGLEVELS => [qw[ fatal alert critical error warning notice info debug trace ]];
 
 our $T0;
@@ -661,7 +664,7 @@ sub drain_buffer
         }
         $log->debug("send message");
         $graylogger_handle->write(
-            $message.chr(0),
+            $message.NULL,
             on_error => sub
             {
                 my $error = pop;
@@ -763,7 +766,7 @@ $loop->add(IO::Async::Timer::Periodic->new(
         write_buffer();
         if ($graylogger_handle and $graylogger_status == STATUS_CONNECTED) {
             $log->debug("keep alive graylog connection");
-            $graylogger_handle->write(chr(0));
+            $graylogger_handle->write(NUL);
         }
     }
 )->start);
@@ -810,7 +813,7 @@ $loop->add(IO::Async::Signal->new(
     {
         if ($logstderr) {
             local $| = 1;
-            print STDERR "\r\n";
+            print STDERR EOL;
         }
         $log->debug("got INT signal");
         &shutdown();
