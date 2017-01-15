@@ -1,0 +1,57 @@
+# This is an example configuration file for gelf-haproxy-logger
+
+# IP/FQDN of graylog host (with port number)
+# This must be a TCP input stream
+graylog: localhost:12222
+
+# Path to the local unix domain socket
+# This is where HAproxy put its syslog messages to
+#socket: /var/run/haproxy-logger.sock
+socket: /home/david/haproxy-logger.sock
+
+# Socket file permissions
+# HAproxy MUST be able to write to socket!
+perms: 0660
+
+# Path to a pidfile (optional)
+#pidfile: /var/run/haproxy-logger.pid
+
+# Set the logasap option globally
+logasap: yes
+
+# Hint: three dashes indicates next YAML document.  DO NOT REMOVE THIS.
+---
+# This document contains only HAproxy frontend definitions
+
+# Name of frontend
+http-in:
+
+  # Logging mode (http, https, tcp, ssl)
+  mode: http
+
+  # Captures are only possible per-frontend, to avoid confusing log
+  # messages.
+  capture:
+    # Hint: cookie capture not possible yet, but planned in future
+
+    # Captures headers
+    headers:
+
+      # Capture request headers
+      # These are headers sent by the client
+      client:
+
+        # List of Strings are most common
+        # This captures 255 bytes of the "Host" header field
+        - Host
+
+        # But as short-hand Key: Value pair, the value
+        # indicates a user-defined capture length:
+        - User-Agent: 32
+
+      # Same as above, but with response headers (sent by the responding
+      # server)
+      server:
+
+        # Content-Length is useful when "logasap" is in action.
+        - Content-Length
