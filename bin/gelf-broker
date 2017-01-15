@@ -397,7 +397,16 @@ sub bind_listener
         Local   => $file,
     );
     if ($socket) {
-        chmod(0666, $file);
+        if ($config->{perms}) {
+            my $perms = oct($config->{perms}) & 0777;
+            if (chmod($perms, $file)) {
+                $log->debugf("file permissions of $file changed to 0%o", $perms);
+            } else {
+                $log->errorf("cannot change file permissions of $file to 0%o: $!", $perms);
+                $socket->close;
+                return false;
+            }
+        }
         $listener_signature = file_signature($file);
         $listener_handle = IO::Async::Socket->new(
             read_handle     => $socket,
@@ -430,7 +439,6 @@ sub check_listener
         return false;
     }
 
-    chmod(0666, $file);
     unless ($listener_signature eq file_signature($file)) {
         $log->warn("socket signature changed");
         return false;
