@@ -455,22 +455,42 @@ sub check_listener
 sub write_status_file
 {
     my $file = $config->{status} || return;
-    YAML::DumpFile($file, {
-        pid     => $$,
-        buffer  => scalar(@buffer),
-        started => $^T,
-        uptime  => $T0->now,
-        listener => {
-            socket  => $config->{socket},
-            signature => ($listener_signature ? unpack('h*' => $listener_signature) : undef),
-        },
-        socket  => $config->{socket},
-        graylog => {
-            status  => $graylogger_status,
-            hostport => $config->{graylog},
-        },
-    });
-    $log->debug("status file written to $file");
+
+    if (sysopen(my $lockfh, "$file~", O_CREAT | O_WRONLY)) {
+        if (flock ($lockfh, LOCK_EX | LOCK_NB)) {
+            local $| = 1;
+            syswrite($lockfh, $$);
+            $log->debug("lockfile $file~ created");
+
+            YAML::DumpFile($file, {
+                pid     => $$,
+                buffer  => scalar(@buffer),
+                started => $^T,
+                uptime  => $T0->now,
+                listener => {
+                    socket  => $config->{socket},
+                    signature => ($listener_signature ? unpack('h*' => $listener_signature) : undef),
+                },
+                socket  => $config->{socket},
+                graylog => {
+                    status  => $graylogger_status,
+                    hostport => $config->{graylog},
+                },
+            });
+            $log->debug("status file written to $file");
+
+            close $lockfh;
+            if (unlink "$file~") {
+                $log->debug("lockfile $file~ removed");
+            } else {
+                $log->warn("cannot unlink lockfile $file~: $!");
+            }
+        } else {
+            $log->error("cannot obtain lock on lockfile $file~: $!");
+        }
+    } else {
+        $log->error("cannot create lockfile $file~: $!");
+    }
 }
 
 sub read_message
