@@ -17,6 +17,7 @@ use Log::GelfSocket ();
 use Time::Duration;
 use Text::Pluralize;
 use IO::Socket;
+use Term::ANSIColor qw(color);
 use Socket qw(SOCK_DGRAM);
 
 $Time::Duration::MILLISECOND = true;
@@ -77,6 +78,20 @@ Z<>
 my $help = 0;
 push @GetOpts => (
     'help' => \$help
+);
+
+########################################
+
+
+=item B<--color>
+
+Z<>
+
+=cut
+
+my $color = 0;
+push @GetOpts => (
+    'color' => \$color
 );
 
 ########################################
@@ -237,7 +252,7 @@ if ($status) {
         INFO("broker started at ".scalar(gmtime $status->{started})." UTC");
     }
     if ($status->{uptime}) {
-        INFO("broker is online since ".duration($status->{uptime})."");
+        INFO("broker is online for ".duration($status->{uptime})."");
     }
     if ($status->{socket}) {
         $socket = $status->{listener}->{socket};
@@ -351,10 +366,20 @@ if (0) {
     $exit = 3;
 }
 
-map { print "   error: $_\n" } @ERROR;
+
+END {
+    print color('reset') if $color;
+}
+
+print color('reset bold white on_bright_red') if $color;
+map { print "error: $_\n" } @ERROR;
+print color('reset bold white on_bright_red') if $color;
 map { print "critical: $_\n" } @CRIT;
-map { print " warning: $_\n" } @WARN;
-map { print "    good: $_\n" } @GOOD;
-map { print "    info: $_\n" } @INFO;
+print color('reset black on_yellow') if $color;
+map { print "warning: $_\n" } @WARN;
+print color('reset black on_bright_green') if $color;
+map { print "good: $_\n" } @GOOD;
+print color('reset white on_blue') if $color;
+map { print "info: $_\n" } @INFO;
 
 exit $exit;
