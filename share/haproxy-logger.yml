@@ -1,16 +1,14 @@
 # This is an example configuration file for gelf-haproxy-logger
 
-# IP/FQDN of graylog host (with port number)
-# This must be a TCP input stream
-graylog: localhost:12222
+# Unix domain socket of gelf broker
+target: /var/run/gelf.sock
 
 # Path to the local unix domain socket
 # This is where HAproxy put its syslog messages to
-#socket: /var/run/haproxy-logger.sock
-socket: /home/david/haproxy-logger.sock
+listen: /var/run/haproxy-logger.sock
 
-# Socket file permissions
-# HAproxy MUST be able to write to socket!
+# File permissions for listen socket
+# HAproxy MUST be able to write to this socket!
 perms: 0660
 
 # Path to a pidfile (optional)
