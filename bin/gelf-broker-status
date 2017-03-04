@@ -15,6 +15,7 @@ use Pod::Usage;
 use Try::Tiny;
 use Log::GelfSocket ();
 use Time::Duration;
+use Time::HiRes qw(usleep);
 use Text::Pluralize;
 use IO::Socket;
 use Term::ANSIColor qw(color);
@@ -154,11 +155,6 @@ sub file_mtime
         return;
     }
     return $stat[9];
-}
-
-sub usleep
-{
-    select(undef, undef, undef, shift);
 }
 
 ################################################################################
