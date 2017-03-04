@@ -398,7 +398,7 @@ sub bind_listener
     );
     if ($socket) {
         if ($config->{perms}) {
-            my $perms = oct($config->{perms}) & 0777;
+            my $perms = oct($config->{perms}) & oct('0777');
             if (chmod($perms, $file)) {
                 $log->debugf("file permissions of $file changed to 0%o", $perms);
             } else {
