@@ -795,7 +795,7 @@ if (my $pidfile = $config->{pidfile}) {
 read_buffer();
 
 $loop->add(IO::Async::Timer::Periodic->new(
-    interval => 60,
+    interval => 10,
     reschedule => 'drift',
     on_tick => sub
     {
