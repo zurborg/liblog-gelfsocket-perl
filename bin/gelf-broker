@@ -498,7 +498,9 @@ sub read_message
     my ($socket, $message, $address) = @_;
     my $bytes = length $message;
     $log->debug("received $bytes bytes");
-    push @buffer => $message;
+    if ($bytes > 1) {
+        push @buffer => $message;
+    }
 }
 
 sub split_hostport
