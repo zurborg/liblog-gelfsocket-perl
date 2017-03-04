@@ -27,13 +27,13 @@ sub carp_or_croak
     return false;
 }
 
-=HEAD1 DESCRIPTION
+=head1 DESCRIPTION
 
 Send log messages to a local unix domain socket.
 
 Before using this module you need an active L<gelf-broker> instance listening on the unix domain socket specified in the L</socket> attribute. L<gelf-broker> is shipped with this distribution.
 
-=HEAD1 SYNOPSIS
+=head1 SYNOPSIS
 
     $logger = Log::GelfSocket->new;
     $logger->log(info => "This is a test message.");
