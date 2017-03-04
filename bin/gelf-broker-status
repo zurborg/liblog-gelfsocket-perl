@@ -198,14 +198,15 @@ if (my $pidfile = $config->{pidfile}) {
 
 my $status;
 if (my $sfile = $config->{status}) {
+    my $lfile = $sfile.'~';
     if ($pid) {
-        if (-e "$sfile~") {
-            ERROR("lockfile $sfile~ exists, aborting");
+        if (-e $lfile) {
+            ERROR("lockfile $lfile exists, aborting");
         } else {
-            if (open(my $lockfh, ">$sfile~")) {
+            if (open(my $lockfh, '>', $lfile)) {
                 close $lockfh;
                 if (kill USR2 => $pid) {
-                    while (-e "$sfile~") {
+                    while (-e $lfile) {
                         usleep(1/5);
                         # TODO: timeout?
                     }
@@ -214,7 +215,7 @@ if (my $sfile = $config->{status}) {
                     ERROR("cannot sent USR2 signal to process $pid: $!");
                 }
             } else {
-                ERROR("cannot touch lockfile $sfile~: $!");
+                ERROR("cannot touch lockfile $lfile: $!");
             }
         }
     }
