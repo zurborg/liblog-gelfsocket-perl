@@ -34,13 +34,14 @@ our %MAP = (
     t   => 'timestamp',
     l   => 'level',
     a   => 'http_client',
-    E   => 'http_apros',
     F   => 'filename',
     k   => 'http_index',
     L   => 'http_id',
     m   => 'http_module',
     v   => 'http_server',
     V   => 'http_vhost',
+    # not used by default:
+    E   => 'http_apros',
     UA  => 'http_useragent',
     ref => 'http_referer',
 );
