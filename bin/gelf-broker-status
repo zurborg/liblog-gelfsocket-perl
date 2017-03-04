@@ -1,0 +1,360 @@
+#!/usr/bin/perl
+
+# PODNAME: gelf-broker-status
+
+use strictures 2;
+
+# ABSTRACT: get status of gelf-broker
+
+use bytes;
+use boolean;
+
+use YAML qw(LoadFile Dump);
+use Getopt::Long;
+use Pod::Usage;
+use Try::Tiny;
+use Log::GelfSocket ();
+use Time::Duration;
+use Text::Pluralize;
+use IO::Socket;
+use Socket qw(SOCK_DGRAM);
+
+$Time::Duration::MILLISECOND = true;
+
+my @INFO;
+my @GOOD;
+my @WARN;
+my @CRIT;
+my @ERROR;
+
+sub INFO    { push @INFO    => @_ }
+sub GOOD    { push @GOOD    => @_ }
+sub WARN    { push @WARN    => @_ }
+sub CRIT    { push @CRIT    => @_ }
+sub ERROR   { push @ERROR   => @_ }
+
+sub threshold {
+    my ($msg, $value, $warn, $crit) = @_;
+    if ($value > $crit) {
+        CRIT($msg);
+    } elsif ($value > $warn) {
+        WARN($msg);
+    } else {
+        GOOD($msg);
+    }
+}
+
+sub striperr (_) ## no critic
+{
+    my $e = shift || $@ || return;
+    $e =~ s{ \s+ at \s+ (?<file> \S+ ) \s+ line \s+ (?<line> \S+ ) \s* $}{}xsir;
+}
+
+################################################################################
+
+=head1 SYNOPSIS
+
+gelf-broker-status --help
+
+gelf-broker-status [options]
+
+=head1 OPTIONS
+
+=over 4
+
+=cut
+
+my @GetOpts;
+
+########################################
+
+=item B<--help>
+
+Z<>
+
+=cut
+
+my $help = 0;
+push @GetOpts => (
+    'help' => \$help
+);
+
+########################################
+
+=item B<--config> <path to config file>
+
+Defaults to I</etc/gelf-broker.yml>.
+
+=cut
+
+my $configfile = '/etc/gelf-broker.yml';
+push @GetOpts => (
+    'config=s'=> \$configfile
+);
+
+########################################
+
+=back
+
+=cut
+
+GetOptions(@GetOpts) or pod2usage(2);
+
+if ($help) {
+    pod2usage(1);
+    exit 1;
+}
+
+if (@ARGV) {
+    pod2usage(2);
+    exit 2;
+}
+
+################################################################################
+
+sub file_signature
+{
+    my $file = shift || return;
+    my @stat = stat $file;
+    unless (@stat) {
+        warn("cannot stat file $file: $!");
+        return;
+    }
+    use Config;
+    if ($Config{intsize} == 2) {
+        return pack(LL => @stat[0..1]);
+    }
+    if ($Config{intsize} == 4) {
+        return pack(QQ => @stat[0..1]);
+    }
+    warn("bad intsize: %d", $Config{intsize});
+}
+
+sub file_mtime
+{
+    my $file = shift || return;
+    my @stat = stat $file;
+    unless (@stat) {
+        warn("cannot stat file $file: $!");
+        return;
+    }
+    return $stat[9];
+}
+
+sub usleep
+{
+    select(undef, undef, undef, shift);
+}
+
+################################################################################
+
+my $config = LoadFile($configfile);
+
+my $pid;
+
+if (my $pidfile = $config->{pidfile}) {
+    if (-e $pidfile) {
+        if (open (my $pidfh, '<', $pidfile)) {
+            $pid = <$pidfh>;
+            close $pidfh;
+            if ($pid) {
+                $pid =~ s{\D}{}sg;
+                if (-d "/proc") {
+                    if (-e "/proc/$pid") {
+                        INFO("there is an active process with pid $pid as read from pidfile $pidfile");
+                    }
+                } else {
+                    if (kill 0 => $pid) {
+                        GOOD("there is an active process with pid $pid as read from pidfile $pidfile");
+                    } else {
+                        CRIT("pidfile $pidfile found, checking pid $pid reported: $!");
+                        undef $pid;
+                    }
+                }
+            } else {
+                ERROR("no pid in pidfile $pidfile found");
+                undef $pid;
+            }
+        } else {
+            WARN("cannot read pidfile $pidfile: $!");
+            undef $pid;
+        }
+    } else {
+        WARN("pidfile $pidfile defined in config, but the pidfile was not found");
+        undef $pid;
+    }
+}
+
+my $status;
+if (my $sfile = $config->{status}) {
+    if ($pid) {
+        if (-e "$sfile~") {
+            ERROR("lockfile $sfile~ exists, aborting");
+        } else {
+            if (open(my $lockfh, ">$sfile~")) {
+                close $lockfh;
+                if (kill USR2 => $pid) {
+                    while (-e "$sfile~") {
+                        usleep(1/5);
+                        # TODO: timeout?
+                    }
+                    $status = LoadFile($sfile);
+                } else {
+                    ERROR("cannot sent USR2 signal to process $pid: $!");
+                }
+            } else {
+                ERROR("cannot touch lockfile $sfile~: $!");
+            }
+        }
+    }
+    if (my $mtime = file_mtime($sfile)) {
+        my $age = time - $mtime;
+        if ($age < 0) {
+            WARN("modification time of $sfile is ".duration($age)." in future");
+        } elsif ($age > 0) {
+            threshold("broker status is ".duration($age)." old", $age, 300, 1800);
+        } else {
+            GOOD("broker status is fresh");
+        }
+    }
+    unless ($status) {
+        $status = LoadFile($sfile);
+    }
+}
+
+my $socket;
+if ($status) {
+    if (not $pid and $status->{pid}) {
+        $pid = $status->{pid};
+        if (kill 0 => $pid) {
+            GOOD("there is an active process with pid $pid as read from statusfile");
+        } else {
+            CRIT("checking pid $pid reported: $!");
+            undef $pid;
+        }
+    }
+    if ($status->{started}) {
+        INFO("broker started at ".scalar(gmtime $status->{started})." UTC");
+    }
+    if ($status->{uptime}) {
+        INFO("broker is online since ".duration($status->{uptime})."");
+    }
+    if ($status->{socket}) {
+        $socket = $status->{listener}->{socket};
+    }
+    if ($status->{graylog}) {
+        if ($status->{graylog}->{status} eq 1) {
+            INFO("broker tries to connect to graylog server at ".$status->{graylog}->{hostport}."");
+        }
+        if ($status->{graylog}->{status} eq 2) {
+            GOOD("broker is connected to graylog server at ".$status->{graylog}->{hostport}."");
+        }
+        if ($status->{graylog}->{status} eq 3) {
+            WARN("broker is NOT connected to graylog server at ".$status->{graylog}->{hostport}."");
+        }
+        if ($status->{graylog}->{status} eq 4) {
+            INFO("broker is shutting down connection to graylog server at ".$status->{graylog}->{hostport}."");
+        }
+    }
+    if (defined $status->{buffer}) {
+        threshold(pluralize("broker helds %d pending message(s)", $status->{buffer}), $status->{buffer}, 1000, 5000);
+    }
+}
+
+if (my $file = $config->{buffer}) {
+    if (open (my $fh, '<', $file)) {
+        my $len = read($fh, my $lenb, 4);
+        my $err = $!;
+        if (defined $len) {
+            if ($len == 4) {
+                my $i = unpack(N => $lenb);
+                threshold(pluralize("buffer contains %d message(s)", $i), $i, 0, 1000);
+            } elsif ($err) {
+                ERROR("cannot read header from buffer $file: $err ($len bytes read)");
+            } else {
+                ERROR("cannot read header from buffer $file: no error ($len bytes read)");
+            }
+        } elsif ($err) {
+            ERROR("cannot read header from buffer $file: $err (nothing read)");
+        } else {
+            ERROR("cannot read header from buffer $file: no error (nothing read)");
+        }
+        close $fh;
+    } else {
+        WARN("cannot open buffer $file for reading: $!");
+    }
+}
+
+unless ($socket) {
+    $socket = $config->{socket};
+}
+
+if ($socket) {
+    if (-e $socket) {
+        if (-S $socket) {
+            my $sockfh = IO::Socket::UNIX->new(
+                Type => SOCK_DGRAM,
+                Peer => $socket,
+            );
+            if ($sockfh) {
+                my $len = $sockfh->send(chr(0));
+                my $error = $!;
+                if (defined $len) {
+                    if ($len == 1) {
+                        GOOD("broker listening at socket $socket");
+                    } elsif ($error) {
+                        CRIT("cannot send to socket $socket: $error ($len bytes sent)");
+                    } else {
+                        CRIT("cannot send to socket $socket: no error ($len bytes sent)");
+                    }
+                } elsif ($error) {
+                    CRIT("cannot send to socket $socket: $error (nothing sent)");
+                } else {
+                    CRIT("cannot send to socket $socket: no error (nothing sent)");
+                }
+                $sockfh->close;
+                undef $sockfh;
+            } else {
+                CRIT("cannot connect to unix domain socket $socket: $!");
+            }
+        } else {
+            CRIT("file $socket is not a unix domain socket");
+        }
+    } else {
+        CRIT("file $socket not found");
+    }
+}
+
+my $exit = -1;
+
+if (0) {
+    # ...
+
+} elsif (@ERROR) {
+    $exit = 3;
+
+} elsif (@CRIT) {
+    $exit = 2;
+
+} elsif (@WARN) {
+    $exit = 1;
+
+} elsif (@GOOD) {
+    $exit = 0;
+
+} elsif (@INFO) {
+    WARN("no good message recorded.");
+    $exit = 2;
+
+} else {
+    ERROR("no message recorded.");
+    $exit = 3;
+}
+
+map { print "   error: $_\n" } @ERROR;
+map { print "critical: $_\n" } @CRIT;
+map { print " warning: $_\n" } @WARN;
+map { print "    good: $_\n" } @GOOD;
+map { print "    info: $_\n" } @INFO;
+
+exit $exit;
