@@ -19,6 +19,8 @@ use Log::GelfSocket;
 use constant FMT_VERSION => 1;
 use constant PPID => getppid;
 
+use constant LOG_VARS => [qw[ t{cu} a F k l L m v V M ]];
+
 $| = 1;
 
 ################################################################################
@@ -177,10 +179,7 @@ my @ARGV_ORIG = @ARGV;
 
 if ($setup) {
     my @opts;
-    unless (@ARGV) {
-        @ARGV = qw(t{cu} a F k l L m v V M);
-    }
-    foreach my $opt (@ARGV) {
+    foreach my $opt (@{LOG_VARS()}) {
         if ($opt =~ m{^[a-z]$}i) {
             push @opts => $opt.'%-'.$opt;
         } elsif ($opt =~ m{^([^=]+)=(.+)$}) {
@@ -192,8 +191,6 @@ if ($setup) {
         }
     }
     my $fmtstr = join("\\r", @opts);
-    my $argv = join(' ', @ARGV);
-    print qq{# Custom log variables: $argv\n};
     print qq{ErrorLogFormat "$fmtstr"\n};
     my $cmd = $RealPath;
     $cmd .= " --version=" . FMT_VERSION if FMT_VERSION;
