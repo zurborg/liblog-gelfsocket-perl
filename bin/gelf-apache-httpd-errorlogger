@@ -130,23 +130,6 @@ push @GetOpts => (
 
 ########################################
 
-=item B<--extra>
-
-Put extra field into GELF message
-
-May be used more than once
-
-Only allowed together with --setup
-
-=cut
-
-my @extras;
-push @GetOpts => (
-    'extra=s' => \@extras,
-);
-
-########################################
-
 =back
 
 =cut
@@ -195,7 +178,11 @@ if ($setup) {
     my $cmd = $RealPath;
     $cmd .= " --version=" . FMT_VERSION if FMT_VERSION;
     $cmd .= " --socket " . $socket if defined $socket;
-    $cmd .= " -- " . join(" ", map { encode_base64url($_) } @extras) if @extras;
+    if (@ARGV) {
+        $cmd .= " -- " . join(" ", map { encode_base64url($_) } @ARGV);
+        print qq{# Extra fields:\n};
+        print qq{# $_\n} foreach @ARGV;
+    }
     print qq{ErrorLog       "|$cmd"\n};
     exit;
 }
