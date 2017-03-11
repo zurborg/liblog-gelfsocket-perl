@@ -83,6 +83,18 @@ push @GetOpts => (
 
 ########################################
 
+=item B<--monitor>
+
+Z<>
+
+=cut
+
+my $monitor = 0;
+push @GetOpts => (
+    'monitor' => \$monitor
+);
+
+########################################
 
 =item B<--color>
 
@@ -344,25 +356,49 @@ if (0) {
 
 } elsif (@ERROR) {
     $exit = 3;
+    if ($monitor) {
+        printf "GELF-BROKER UNKNOWN - %s\n", join(', ', @ERROR);
+        exit $exit;
+    }
 
 } elsif (@CRIT) {
     $exit = 2;
+    if ($monitor) {
+        printf "GELF-BROKER CRITICAL - %s\n", join(', ', @CRIT);
+        exit $exit;
+    }
 
 } elsif (@WARN) {
     $exit = 1;
+    if ($monitor) {
+        printf "GELF-BROKER WARNING - %s\n", join(', ', @WARN);
+        exit $exit;
+    }
 
 } elsif (@GOOD) {
     $exit = 0;
+    if ($monitor) {
+        printf "GELF-BROKER OK - %s\n", join(', ', @GOOD);
+        exit $exit;
+    }
 
 } elsif (@INFO) {
     WARN("no good message recorded.");
     $exit = 2;
+    if ($monitor) {
+        printf "GELF-BROKER WARNING - %s\n", join(', ', @WARN, @INFO);
+        exit $exit;
+    }
 
 } else {
     ERROR("no message recorded.");
     $exit = 3;
-}
+    if ($monitor) {
+        printf "GELF-BROKER UNKNOWN - %s\n", join(', ', @ERROR);
+        exit $exit;
+    }
 
+}
 
 END {
     print color('reset') if $color;
