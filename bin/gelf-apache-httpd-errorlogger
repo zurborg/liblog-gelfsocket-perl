@@ -202,7 +202,7 @@ sub pushlog {
 
 sub mylog {
     my ($level, $msg, %rest) = @_;
-    @_ = ($msg, %rest, level => $level);
+    @_ = ($msg, %EXTRAS, %rest, level => $level);
     goto &pushlog;
 }
 
