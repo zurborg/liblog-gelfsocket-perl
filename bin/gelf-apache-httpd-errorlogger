@@ -302,24 +302,14 @@ sub errlog {
     if ($O{message} =~ m{^
         (?<facility> PHP )
     \s+
-        (?<level> [^:]+? )
+        (?<php_level> [^:]+? )
     \s*
         :
     \s+
         (?<message> .+? )
-    \s+
-        in
-    \s+
-        (?<filename> \S+? )
-    \s+
-        on
-    \s+
-        line
-    \s+
-        (?<line> \d+ )
     $}sx) {
-        my $level = $+{level};
-        $level = $PHPLEVELS{lc($level)} || $level;
+        my $level = $+{php_level};
+        $level = $PHPLEVELS{lc($level)} || 'note';
         %O = (%O, %+, level => $level);
     }
 
@@ -330,6 +320,34 @@ sub errlog {
         :
     \s+
         (?<message> .+ )
+    $}sx) {
+        %O = (%O, %+);
+    }
+
+    if ($O{message} =~ m{^
+        (?<message> .+? )
+    \s+
+        in
+    \s+
+        (?<filename> \S+? )
+    \s+
+        on
+    \s+
+        line
+    \s+
+        (?<lineno> \d+ )
+    $}sx) {
+        %O = (%O, %+);
+    }
+
+    if ($O{message} =~ m{^
+        (?<message> .+? )
+    \s+
+        in
+    \s+
+        (?<filename> [^:\s]+ )
+        :
+        (?<lineno> \d+ )
     $}sx) {
         %O = (%O, %+);
     }
