@@ -23,6 +23,7 @@ use IO::Socket::SSL;
 use Fcntl qw(LOCK_EX LOCK_NB O_CREAT O_EXCL O_WRONLY);
 
 use YAML;
+use JSON qw(from_json to_json);
 use Regexp::Common qw(net);
 use Getopt::Long;
 use Pod::Usage;
@@ -139,6 +140,19 @@ push @GetOpts => (
 
 ########################################
 
+=item B<--fake>
+
+Do not connect to any graylog server, but print all received GELF messages to stdout
+
+=cut
+
+my $fake = false;
+push @GetOpts => (
+    'fake'=> \$fake
+);
+
+########################################
+
 =item B<--listen> <unix domain socket>
 
 The GELF socket we should listen on.
@@ -233,6 +247,11 @@ sub test_unix_socket
         $log->debug("test failed: cannot connect to unix domain socket $file: $!");
         return false;
     }
+}
+
+sub json_prettyreformat
+{
+    return to_json(from_json(shift), { pretty => 1, canonical => 1 });
 }
 
 sub file_signature
@@ -499,7 +518,11 @@ sub read_message
     my $bytes = length $message;
     $log->debug("received $bytes bytes");
     if ($bytes > 1) {
-        push @buffer => $message;
+        if ($fake) {
+            printf STDOUT "%s\n", json_prettyreformat($message);
+        } else {
+            push @buffer => $message;
+        }
     }
 }
 
@@ -841,7 +864,11 @@ $loop->add(IO::Async::Timer::Periodic->new(
             connect_graylogger();
         }
     }
-)->start) if true;
+)->start) unless $fake;
+
+if ($fake) {
+    $log->notice("Fake mode enabled - not connecting to any graylog server");
+}
 
 $loop->add(IO::Async::Signal->new(
     name => 'INT',
