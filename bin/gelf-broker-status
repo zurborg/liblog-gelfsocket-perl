@@ -280,7 +280,7 @@ if (my $file = $config->{buffer}) {
         if (defined $len) {
             if ($len == 4) {
                 my $i = unpack(N => $lenb);
-                threshold(pluralize("buffer contains %d message(s)", $i), $i, 0, 1000);
+                threshold(pluralize("buffer contains %d message(s)", $i), $i, 500, 1000);
             } elsif ($err) {
                 ERROR("cannot read header from buffer $file: $err ($len bytes read)");
             } else {
