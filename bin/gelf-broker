@@ -380,7 +380,9 @@ sub write_buffer
             $i++;
         }
         close $fh;
-        $log->info("stored $i messages in cache");
+        if ($i > 0) {
+            $log->info("stored $i messages in cache");
+        }
         return true;
     } else {
         $log->warn("cannot open file $file for writing: $!");
