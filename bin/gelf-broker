@@ -128,7 +128,7 @@ push @GetOpts => (
 
 =item B<--log> <level>
 
-Log all messages to stderr
+Log all I<internal> messages to stderr
 
 =cut
 
