@@ -817,8 +817,6 @@ if (my $pidfile = $config->{pidfile}) {
     $log->notice("no pidfile defined");
 }
 
-read_buffer();
-
 $loop->add(IO::Async::Timer::Periodic->new(
     interval => 10,
     reschedule => 'drift',
@@ -935,6 +933,9 @@ $loop->add(IO::Async::Signal->new(
 ));
 
 $log->info("starting");
+
+read_buffer();
+write_buffer();
 
 $loop->run;
 
