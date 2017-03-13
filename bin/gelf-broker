@@ -539,7 +539,9 @@ sub read_message
         if ($fake) {
             printf STDOUT "%s\n", json_prettyreformat($message);
         } else {
-            push @buffer => $message;
+            unless (send_message($message)) {
+                push @buffer => $message;
+            }
         }
     }
 }
