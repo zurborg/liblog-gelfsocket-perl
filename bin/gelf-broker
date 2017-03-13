@@ -27,6 +27,7 @@ use Regexp::Common qw(net);
 use Getopt::Long;
 use Pod::Usage;
 use Log::GelfSocket ();
+use Scalar::Util qw(weaken);
 
 use Log::Any '$log', filter => \&logfilter;
 use Log::Any::Adapter;
@@ -249,6 +250,19 @@ sub test_unix_socket
     } else {
         $log->debug("test failed: cannot connect to unix domain socket $file: $!");
         return false;
+    }
+}
+
+sub human_bytes {
+    my $b = int shift;
+    if ($b > 1_000_000_000) {
+        return sprintf('%0.03f GB', $b / 1_000_000_000);
+    } elsif ($b > 1_000_000) {
+        return sprintf('%0.03f MB', $b / 1_000_000);
+    } elsif ($b > 1_000) {
+        return sprintf('%0.03f KB', $b / 1_000);
+    } else {
+        return "$b B";
     }
 }
 
@@ -521,7 +535,6 @@ sub read_message
 {
     my ($socket, $message, $address) = @_;
     my $bytes = length $message;
-    $log->debug("received $bytes bytes");
     if ($bytes > 1) {
         if ($fake) {
             printf STDOUT "%s\n", json_prettyreformat($message);
@@ -716,8 +729,13 @@ sub drain_buffer
     unless ($graylogger_status == STATUS_CONNECTED) {
         return;
     }
-    my $i = 0;
+    my $count = 0;
+    my $bytes = 0;
+    my $T = Time::Monotonic->new;
+    my $last = false;
+    weaken $last;
     while (@buffer) {
+        last if $last;
         unless ($graylogger_handle and $graylogger_status == STATUS_CONNECTED) {
             $log->notice("graylog not available, but there pending messages waiting in buffer");
             last;
@@ -726,19 +744,23 @@ sub drain_buffer
         unless ($message) {
             next;
         }
-        $log->debug("send message");
         $graylogger_handle->write(
-            $message.NUL,
+            $message . NUL,
             on_error => sub
             {
                 my $error = pop;
                 $log->warn("cannot send message: $error, rescheduling message");
                 push @buffer => $message;
+                $last = true;
             },
         );
-        $i++;
+        $count++;
+        $bytes += length($message) + 1;
     }
-    $log->debug("sent $i messages") if $i > 0;
+    $T = $T->now;
+    if ($count > 0) {
+        $log->infof("sent %d messages and %sytes in %0.03f seconds, current performance is %d/s and %s/s", $count, human_bytes($bytes), $T, int($count/$T), human_bytes($bytes/$T));
+    }
 }
 
 sub shutdown
