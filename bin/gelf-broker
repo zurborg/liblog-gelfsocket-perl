@@ -947,11 +947,11 @@ $loop->add(IO::Async::Signal->new(
     }
 ));
 
-$log->info("starting");
-
 read_buffer();
 write_buffer();
 
+$log->info('ready');
+
 $loop->run;
 
-$log->info("loop stopped");
+$log->info('cleanup');
