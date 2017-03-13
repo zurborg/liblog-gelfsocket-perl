@@ -834,22 +834,12 @@ $loop->add(IO::Async::Timer::Periodic->new(
 )->start);
 
 $loop->add(IO::Async::Timer::Periodic->new(
-    interval => 1/5,
-    reschedule => 'skip',
-    on_tick => \&drain_buffer,
-)->start);
-
-$loop->add(IO::Async::Timer::Periodic->new(
-    interval => 2,
-    first_interval => 0,
-    reschedule => 'skip',
-    on_tick => sub
+    interval        => 1,
+    reschedule      => 'drift',
+    on_tick         => sub
     {
-        if ($listener_handle) {
-            unless (check_listener()) {
-                bind_listener();
-            }
-        } else {
+        drain_buffer();
+        unless ($listener_handle and check_listener()) {
             $log->debug("not listening, binding");
             bind_listener();
         }
@@ -857,10 +847,10 @@ $loop->add(IO::Async::Timer::Periodic->new(
 )->start);
 
 $loop->add(IO::Async::Timer::Periodic->new(
-    interval => 5,
-    first_interval => 0,
-    reschedule => 'skip',
-    on_tick => sub
+    interval        => 5,
+    first_interval  => 0,
+    reschedule      => 'drift',
+    on_tick         => sub
     {
         unless (defined $graylogger_handle) {
             $log->debug("not connected, connecting");
