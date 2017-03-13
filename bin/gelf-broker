@@ -9,8 +9,7 @@ use strictures 2;
 use bytes;
 use boolean;
 
-use EV;
-use IO::Async::Loop::EV;
+use IO::Async::Loop;
 use IO::Async::Listener;
 use IO::Async::Socket;
 use IO::Async::Signal;
@@ -218,7 +217,11 @@ if ($logstderr) {
     Log::Any::Adapter->set('Stderr', log_level => $logstderr);
 }
 
-my $loop = IO::Async::Loop::EV->new;
+$log->info('starting');
+
+my $loop = IO::Async::Loop->new;
+
+$log->debugf('loaded %s', ref($loop));
 
 my $listener_handle;
 my $listener_signature;
