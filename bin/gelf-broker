@@ -724,6 +724,16 @@ sub configure_graylogger
     $graylogger_status = STATUS_CONNECTED;
 }
 
+sub send_message
+{
+    my $message = shift;
+    unless ($graylogger_handle and $graylogger_status == STATUS_CONNECTED) {
+        return false;
+    }
+    $graylogger_handle->write($message . NUL);
+    return true;
+}
+
 sub drain_buffer
 {
     unless ($graylogger_status == STATUS_CONNECTED) {
@@ -732,34 +742,19 @@ sub drain_buffer
     my $count = 0;
     my $bytes = 0;
     my $T = Time::Monotonic->new;
-    my $last = false;
-    weaken $last;
     while (@buffer) {
-        last if $last;
-        unless ($graylogger_handle and $graylogger_status == STATUS_CONNECTED) {
-            $log->notice("graylog not available, but there pending messages waiting in buffer");
+        my $message = shift @buffer || next;
+        if (send_message($message)) {
+            $count++;
+            $bytes += length($message) + 1;
+        } else {
+            push @buffer => $message;
             last;
         }
-        my $message = shift @buffer;
-        unless ($message) {
-            next;
-        }
-        $graylogger_handle->write(
-            $message . NUL,
-            on_error => sub
-            {
-                my $error = pop;
-                $log->warn("cannot send message: $error, rescheduling message");
-                push @buffer => $message;
-                $last = true;
-            },
-        );
-        $count++;
-        $bytes += length($message) + 1;
     }
     $T = $T->now;
     if ($count > 0) {
-        $log->infof("sent %d messages and %sytes in %0.03f seconds, current performance is %d/s and %s/s", $count, human_bytes($bytes), $T, int($count/$T), human_bytes($bytes/$T));
+        $log->infof("sent %d messages and %sytes in %0.03f seconds, throughput: %d/s and %s/s", $count, human_bytes($bytes), $T, int($count/$T), human_bytes($bytes/$T));
     }
 }
 
