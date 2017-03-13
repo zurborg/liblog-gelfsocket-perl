@@ -23,6 +23,7 @@ use Fcntl qw(LOCK_EX LOCK_NB O_CREAT O_EXCL O_WRONLY);
 
 use YAML;
 use JSON qw(from_json to_json);
+use FindBin qw($RealBin $RealScript);
 use Regexp::Common qw(net);
 use Getopt::Long;
 use Pod::Usage;
@@ -127,6 +128,19 @@ push @GetOpts => (
 
 ########################################
 
+=item B<--version>
+
+Z<>
+
+=cut
+
+my $print_version;
+push @GetOpts => (
+    'version' => \$print_version
+);
+
+########################################
+
 =item B<--log> <level>
 
 Log all I<internal> messages to stderr
@@ -207,9 +221,11 @@ if ($help) {
     exit 1;
 }
 
-if (@ARGV) {
-    pod2usage(2);
-    exit 2;
+my $myversion = $main::VERSION ? "This is $RealScript, version $main::VERSION" : "This is $0, an unreleased development version";
+
+if ($print_version) {
+    print "$myversion\n";
+    exit 0;
 }
 
 ########################################
@@ -218,7 +234,7 @@ if ($logstderr) {
     Log::Any::Adapter->set('Stderr', log_level => $logstderr);
 }
 
-$log->info('starting');
+$log->info($myversion);
 
 my $loop = IO::Async::Loop->new;
 
@@ -947,7 +963,7 @@ $loop->add(IO::Async::Signal->new(
 read_buffer();
 write_buffer();
 
-$log->info('ready');
+$log->info('starting');
 
 $loop->run;
 
