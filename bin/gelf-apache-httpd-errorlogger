@@ -106,11 +106,11 @@ push @GetOpts => (
 
 The GELF socket we should log to.
 
-Defaults to I</var/run/gelf.sock>.
+Defaults to I</var/run/gelf/broker.sock>.
 
 =cut
 
-my $socket = '/var/run/gelf.sock';
+my $socket = '/var/run/gelf/broker.sock';
 push @GetOpts => (
     'socket=s'=> \$socket
 );

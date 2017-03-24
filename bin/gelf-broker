@@ -100,7 +100,7 @@ sub end (&) ## no critic
 }
 
 my $config = {
-    pidfile => '/var/run/gelf-broker.pid',
+    pidfile => '/var/run/gelf/broker.pid',
 };
 
 ################################################################################
@@ -203,11 +203,11 @@ push @GetOpts => (
 
 The GELF socket we should listen on.
 
-Defaults to I</var/run/gelf.sock>.
+Defaults to I</var/run/gelf/broker.sock>.
 
 =cut
 
-$config->{socket} = '/var/run/gelf.sock';
+$config->{socket} = '/var/run/gelf/broker.sock';
 push @GetOpts => (
     'listen=s'=> \$config->{socket}
 );
@@ -231,11 +231,11 @@ push @GetOpts => (
 
 =item B<--config> <path to config file>
 
-Defaults to I</etc/gelf-broker.yml>.
+Defaults to I</etc/gelf/broker.yml>.
 
 =cut
 
-my $configfile = '/etc/gelf-broker.yml';
+my $configfile = '/etc/gelf/broker.yml';
 push @GetOpts => (
     'config=s'=> \$configfile
 );

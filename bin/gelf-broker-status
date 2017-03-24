@@ -111,11 +111,11 @@ push @GetOpts => (
 
 =item B<--config> <path to config file>
 
-Defaults to I</etc/gelf-broker.yml>.
+Defaults to I</etc/gelf/broker.yml>.
 
 =cut
 
-my $configfile = '/etc/gelf-broker.yml';
+my $configfile = '/etc/gelf/broker.yml';
 push @GetOpts => (
     'config=s'=> \$configfile
 );

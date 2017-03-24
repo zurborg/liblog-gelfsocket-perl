@@ -48,13 +48,13 @@ The unix domain datagram socket to connect to.
 
 This is a read-only value and can only be set in the constructor.
 
-Defaults to I</var/run/gelf.sock>.
+Defaults to I</var/run/gelf/broker.sock>.
 
 =cut
 
 has socket      => (
     is          => 'ro',
-    default     => '/var/run/gelf.sock',
+    default     => '/var/run/gelf/broker.sock',
 );
 
 =attr ticker
