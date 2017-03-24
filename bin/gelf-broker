@@ -29,12 +29,14 @@ use Getopt::Long;
 use Pod::Usage;
 use Log::GelfSocket ();
 use Scalar::Util qw(weaken);
+use Class::Load qw(try_load_class);
+use File::Slurp qw(write_file);
 
 use Log::Any '$log', filter => \&logfilter;
 use Log::Any::Adapter;
 
 use Time::Monotonic;
-
+use Data::Dumper;
 use Try::Tiny;
 
 use constant STATUS_UNKNOWN     => 0;
@@ -57,8 +59,12 @@ BEGIN {
     $| = 1;
     $SIG{$_} = 'IGNORE' foreach keys %SIG;
     undef $SIG{$_} foreach qw(HUP INT TERM QUIT USR1 USR2 PIPE);
-    close STDIN;
     $T0 = Time::Monotonic->new;
+}
+
+sub dumper
+{
+    return Data::Dumper->new(\@_)->Purity(1)->Terse(1)->Dump;
 }
 
 sub logfilter
@@ -96,6 +102,10 @@ sub end (&) ## no critic
 my $config = {
     pidfile => '/var/run/gelf-broker.pid',
 };
+
+################################################################################
+
+our $RealPath = $RealBin . '/' . $RealScript;
 
 ################################################################################
 
@@ -137,6 +147,19 @@ Z<>
 my $print_version;
 push @GetOpts => (
     'version' => \$print_version
+);
+
+########################################
+
+=item B<--setup-ubic>
+
+Z<>
+
+=cut
+
+my $setup_ubic;
+push @GetOpts => (
+    'setup-ubic' => \$setup_ubic
 );
 
 ########################################
@@ -219,6 +242,47 @@ GetOptions(@GetOpts) or pod2usage(2);
 if ($help) {
     pod2usage(1);
     exit 1;
+}
+
+if ($setup_ubic) {
+    unless (try_load_class('Ubic::Settings')) {
+        die "Ubic seams not to be installed yet\n";
+    }
+    my $service_base_dir = Ubic::Settings->service_dir;
+    my $data_base_dir = Ubic::Settings->data_dir;
+    unless (defined $service_base_dir and -d $service_base_dir) {
+        die "Ubic seams not to be fully configured yet\n";
+    }
+    my $service_gelf_dir = $service_base_dir . '/gelf';
+    unless (-d $service_gelf_dir) {
+        unless (mkdir $service_gelf_dir) {
+            die "Cannot create directory $service_gelf_dir: $!\n";
+        }
+    }
+    my $service_gelf_file = $service_gelf_dir . '/broker';
+    if (-e $service_gelf_file) {
+        die "File $service_gelf_file already exists\n";
+    }
+    my @argv = ($RealPath);
+    if (defined $configfile) {
+        push @argv => ('--config', $configfile);
+    }
+    if (defined $logstderr) {
+        push @argv => ('--log', $logstderr);
+    }
+    my $ubic_config_template = 'use Ubic::Service::SimpleDaemon;Ubic::Service::SimpleDaemon->new(bin=>%s,stdout=>%s,stderr=>%s,ubic_log=>%s,);';
+    write_file(
+        $service_gelf_file,
+        sprintf(
+            $ubic_config_template,
+            dumper(\@argv),
+            dumper($data_base_dir.'/gelf-broker.out'),
+            dumper($data_base_dir.'/gelf-broker.err'),
+            dumper($data_base_dir.'/gelf-broker.log'),
+        )
+    );
+    print "Ubic service gelf.broker created\n";
+    exit 0;
 }
 
 my $myversion = $main::VERSION ? "This is $RealScript, version $main::VERSION" : "This is $0, an unreleased development version";
