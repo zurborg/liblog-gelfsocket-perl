@@ -19,6 +19,8 @@ use boolean;
 use constant GELF_SPEC_VERSION  => '1.1';
 use constant HOSTNAME           => hostname();
 
+# VERSION
+
 BEGIN { $Carp::Internal{+__PACKAGE__}++ }
 
 sub carp_or_croak

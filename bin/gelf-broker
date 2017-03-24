@@ -105,6 +105,15 @@ my $config = {
 
 ################################################################################
 
+# VERSION
+
+if ($main::VERSION and $Log::GelfSocket::VERSION) {
+    if ($main::VERSION ne $Log::GelfSocket::VERSION) {
+        printf "This version (v%s) is incompatible with its own library (v%s)\n", $main::VERSION, $Log::GelfSocket::VERSION;
+        exit 2;
+    }
+}
+
 our $RealPath = $RealBin . '/' . $RealScript;
 
 ################################################################################
