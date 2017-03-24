@@ -806,7 +806,7 @@ sub configure_graylogger
         on_write_error => sub
         {
             my $error = pop;
-            $log->error('cannot write data to graylog: %s', $error);
+            $log->errorf('cannot write data to graylog: %s', $error);
             $graylogger_status = STATUS_ERROR;
             if (defined $graylogger_handle) {
                 $graylogger_handle->close_now;
