@@ -70,7 +70,7 @@ sub dumper
 sub logfilter
 {
     my ($category, $level, $message) = @_;
-    return sprintf('%s UTC [%s] %8s: %s', scalar(gmtime time), $category, LOGLEVELS->[$level], $message);
+    return sprintf('%s UTC [broker:%s] %8s: %s', scalar(gmtime time), $category, LOGLEVELS->[$level], $message);
 }
 
 sub striperr (_) ## no critic
