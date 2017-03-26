@@ -957,43 +957,41 @@ if (my $pidfile = $config->{pidfile}) {
 }
 
 $loop->add(IO::Async::Timer::Periodic->new(
-    interval => 10,
-    reschedule => 'drift',
-    on_tick => sub
-    {
-        write_buffer();
-        if ($graylogger_handle and $graylogger_status == STATUS_CONNECTED) {
-            $log->debug('keep alive graylog connection');
-            $graylogger_handle->write(NUL);
-        }
-    }
-)->start);
-
-$loop->add(IO::Async::Timer::Periodic->new(
-    interval        => 1,
+    interval        => 10,
+    first_interval  => 1,
     reschedule      => 'drift',
     on_tick         => sub
     {
+        write_buffer();
         drain_buffer();
         unless ($listener_handle and check_listener()) {
             $log->debug('not listening on any socket file, binding');
             bind_listener();
         }
-    }
-)->start);
-
-$loop->add(IO::Async::Timer::Periodic->new(
-    interval        => 5,
-    first_interval  => 0,
-    reschedule      => 'drift',
-    on_tick         => sub
-    {
-        unless (defined $graylogger_handle) {
+        if (not $fake and not defined $graylogger_handle) {
             $log->debug('not connected to graylog, connecting');
             connect_graylogger();
         }
+        if ($graylogger_handle and $graylogger_status == STATUS_CONNECTED) {
+            $log->debug('keep alive graylog connection');
+            $graylogger_handle->write(NUL);
+        }
+        foreach my $metric (qw( read sent )) {
+            my %perf = get_performance($metric);
+            next unless $perf{count} and $perf{bytes} and $perf{timer};
+            $log->infof(
+                '%s %d messages and %sytes in %0.03f seconds, throughput: %d/s and %s/s',
+                $metric,
+                $perf{count},
+                human_bytes($perf{bytes}),
+                $perf{timer},
+                int($perf{count} / $perf{timer}),
+                human_bytes($perf{bytes} / $perf{timer}),
+            );
+        }
+
     }
-)->start) unless $fake;
+)->start);
 
 if ($fake) {
     $log->notice('fake mode enabled - never connecting to any graylog server');
