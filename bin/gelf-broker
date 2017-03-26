@@ -323,9 +323,40 @@ my $shutdown = false;
 
 my @buffer;
 
+my %performance;
+
 end {
     $log->info('exit');
 };
+
+sub init_performance
+{
+    my $id = shift;
+    $performance{$id} = {
+        count => 0,
+        bytes => 0,
+        timer => Time::Monotonic->new,
+    };
+}
+
+sub push_performance
+{
+    my $id = shift;
+    my $bytes = shift;
+    $performance{$id}->{count}++;
+    $performance{$id}->{bytes} += $bytes;
+}
+
+sub get_performance {
+    my $id = shift;
+    my %perf = (
+        count => $performance{$id}->{count},
+        bytes => $performance{$id}->{bytes},
+        timer => $performance{$id}->{timer}->now,
+    );
+    init_performance($id);
+    return %perf;
+}
 
 sub test_unix_socket
 {
@@ -621,10 +652,13 @@ sub write_status_file
     }
 }
 
+init_performance('read');
+
 sub read_message
 {
     my ($socket, $message, $address) = @_;
     my $bytes = length $message;
+    push_performance(read => $bytes);
     if ($bytes > 1) {
         if ($fake) {
             printf STDOUT "%s\n", json_prettyreformat($message);
@@ -816,13 +850,18 @@ sub configure_graylogger
     $graylogger_status = STATUS_CONNECTED;
 }
 
+init_performance('sent');
+
 sub send_message
 {
+    use bytes;
     my $message = shift;
     unless ($graylogger_handle and $graylogger_status == STATUS_CONNECTED) {
         return false;
     }
-    $graylogger_handle->write($message . NUL);
+    $message .= NUL;
+    $graylogger_handle->write($message);
+    push_performance(sent => length $message);
     return true;
 }
 
@@ -831,29 +870,12 @@ sub drain_buffer
     unless ($graylogger_status == STATUS_CONNECTED) {
         return;
     }
-    my $count = 0;
-    my $bytes = 0;
-    my $T = Time::Monotonic->new;
     while (@buffer) {
         my $message = shift @buffer || next;
-        if (send_message($message)) {
-            $count++;
-            $bytes += length($message) + 1;
-        } else {
+        unless (send_message($message)) {
             push @buffer => $message;
             last;
         }
-    }
-    $T = $T->now;
-    if ($count > 0) {
-        $log->infof(
-            'sent %d messages and %sytes in %0.03f seconds, throughput: %d/s and %s/s',
-            $count,
-            human_bytes($bytes),
-            $T,
-            int($count / $T),
-            human_bytes($bytes / $T),
-        );
     }
 }
 
