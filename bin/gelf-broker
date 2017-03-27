@@ -328,6 +328,17 @@ end {
     $log->info('exit');
 };
 
+sub selflog
+{
+    my ($level, $message, %extra) = @_;
+    $extra{facility} = 'gelf-broker';
+    $extra{pid} = $$;
+    my %gelf = Log::GelfSocket->_prepare($level, $message, %extra);
+    my $json = to_json(\%gelf);
+    unshift @buffer => $json;
+    return;
+}
+
 sub init_performance
 {
     my $id = shift;
