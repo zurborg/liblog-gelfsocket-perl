@@ -903,6 +903,7 @@ sub shutdown
 
     if ($graylogger_handle) {
         $log->debug('graylog handle still active');
+        drain_buffer();
         $graylogger_handle->close_now;
     }
 
