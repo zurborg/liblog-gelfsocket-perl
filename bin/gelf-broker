@@ -57,8 +57,7 @@ our $T0;
 
 BEGIN {
     $| = 1;
-    $SIG{$_} = 'IGNORE' foreach keys %SIG;
-    undef $SIG{$_} foreach qw(HUP INT TERM QUIT USR1 USR2 PIPE);
+    $SIG{$_} = 'IGNORE' foreach grep !/^(HUP|INT|TERM|QUIT|USR1|USR2|PIPE)$/, keys %SIG;
     $T0 = Time::Monotonic->new;
 }
 
