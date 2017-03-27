@@ -973,7 +973,7 @@ $loop->add(IO::Async::Timer::Periodic->new(
         }
         if ($graylogger_handle and $graylogger_status == STATUS_CONNECTED) {
             $log->debug('keep alive graylog connection');
-            $graylogger_handle->write(NUL);
+            $graylogger_handle->write('{}'.NUL);
         }
         foreach my $metric (qw( read sent )) {
             my %perf = get_performance($metric);
