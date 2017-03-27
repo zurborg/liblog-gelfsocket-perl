@@ -777,6 +777,7 @@ sub connect_graylogger
             $log->infof('connected to graylog host %s at port %d', $host, $port);
             $graylogger_handle = $handle;
             configure_graylogger();
+            selflog('info', 'connected to graylog');
         },
         on_connect_error => sub
         {
@@ -892,6 +893,8 @@ sub shutdown
 {
     return if $shutdown;
     $shutdown = true;
+
+    selflog(info => 'shutdown graylog connection');
 
     write_buffer();
 
