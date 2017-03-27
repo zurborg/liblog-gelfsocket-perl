@@ -796,11 +796,10 @@ sub configure_graylogger
 {
     return unless $graylogger_handle;
     $graylogger_handle->configure(
-        autoflush => true,
-        want_readready => true,
+        autoflush       => true,
+        want_readready  => true,
         want_writeready => true,
-        want_writeready => true,
-        on_read => sub
+        on_read         => sub
         {
             $log->notice('received packet of data from graylog - this is not usual and everything will be ignored (is this really a graylog endpoint?)');
             return 0;
