@@ -756,7 +756,7 @@ sub connect_graylogger
             error_trap
             npn_protocols
             alpn_protocols
-            ticket_keycb 
+            ticket_keycb
         ));
         $extras{SSL_verify_mode} = SSL_VERIFY_PEER;
     } else {
